@@ -15,11 +15,19 @@ KOS 桌面项目：浏览器桌面与 BFF — 桌面、窗口、dock、launcher�
 
 | 包 | 职责 |
 |---|---|
-| `pkg/dock` | 桌面条目对象类（DASH-C-30）、桌面页声明（DASH-C-52）、dock 偏好域（DASH-C-27） |
+| `pkg/dock` | 桌面条目对象类（DASH-C-30）、桌面页声明（DASH-C-52）、dock 偏好域（DASH-C-27）、条目生命周期控制器（KOSD-C-19/20） |
 | `pkg/desktop` | 桌面页投影：条目、已安装应用、最近使用与通知中心，逐项带来源（KOSD-C-53） |
 | `pkg/bff` | 会话引导与登录代理、控制面 API 代理与错误包络、事件 SSE、CSRF/CSP、静态资产 |
 | `pkg/bff/assets/shell` | 浏览器外壳：启动、路由、错误边界、页面注册表导航、桌面页渲染、事件流 |
 | `cmd/kos-dashboard` | BFF 进程入口 |
+
+### 条目控制器的宿主契约
+
+控制器以库形式交付（`dock.NewController`），由运行时宿主注册与投递：
+
+- 宿主按声明的 `scope` 注册 `desktop-entry`（`extension.ControllerSet.Register`），并把控制器 `ReadScope` 声明的内核 kind（`Application`）的调和请求投给它。声明本身只列本扩展的对象类，观察集的声明式表达由框架侧补足。
+- 组件激活时先调用 `Sync`：它扫描存储中的条目，删掉所属应用已卸载的条目，然后才对外提供条目类。
+- 控制器只写 `desktop.kos.tsic.top` 组的对象；内核对象与其他扩展的对象只读。
 
 外壳是原生的 ES 模块，随包分发、无构建步骤、无运行时依赖：
 

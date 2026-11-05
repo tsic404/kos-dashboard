@@ -1,9 +1,8 @@
 // Package dock contributes the desktop surface of kos-dashboard: the desktop
 // entry object class (C-30), the desktop page (C-52) and the preference
-// domains (C-27) for the dock layout and the notification read state. An entry
-// is a user-written object, so this package contributes no controller: removing
-// an entry reaches the entry alone and never the application, its data or its
-// downstream objects.
+// domains (C-27) for the dock layout and the notification read state. Entries
+// are user-written; their lifecycle is the declared controller's (C-20), whose
+// host contract is on Controller.
 //
 // The contribution contract (C-18, C-22) and the preference store (C-27) stay
 // in kosd; this package only declares what the product serves.
@@ -12,6 +11,7 @@ package dock
 import (
 	"net/http"
 
+	"github.com/tsic404/kosd/api"
 	"github.com/tsic404/kosd/pkg/extension"
 	"github.com/tsic404/kosd/pkg/write"
 )
@@ -103,6 +103,18 @@ func Declaration() extension.Declaration {
 			ObjectClasses: []extension.ObjectClass{{
 				Group: APIGroup, Kind: EntryKind, Resource: EntryResource,
 				Versions: []string{EntryVersion}, Namespaced: true,
+				// The entry names its application as a declarative reference
+				// (C-19), so the kernel blocks deleting that application while
+				// the entry exists and lists the referencing entries.
+				References: []string{ApplicationRefPath},
+			}},
+			Controllers: []extension.Controller{{
+				// The lifecycle controller writes this package's class alone
+				// (C-20): it removes the entries of an application that is
+				// going away and keeps an installed application's entries.
+				ID:      EntryControllerID,
+				Manages: []extension.GroupKind{{Group: APIGroup, Kind: EntryKind}},
+				Scope:   extension.WriteScope{Groups: []string{APIGroup}},
 			}},
 			Pages: []extension.Page{DesktopPage()},
 			Preferences: []extension.PreferenceSchema{
@@ -122,6 +134,14 @@ func Declaration() extension.Declaration {
 				// Owner writes entries and every other role reads them.
 				Contribution:  EntryKind,
 				ObjectWriters: []write.Role{write.RoleOwner},
+			},
+			{
+				// The controller reads the kernel application each entry
+				// names; its write scope stays this package's own group.
+				Contribution: EntryControllerID,
+				ReadScope: extension.ReadScope{
+					Kinds: []extension.GroupKind{{Group: api.Group, Kind: ApplicationKind}},
+				},
 			},
 		},
 		Retention: []extension.Retention{
