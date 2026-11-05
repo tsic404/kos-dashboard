@@ -1,0 +1,2 @@
+# Control-plane binaries `make test` unpacks; they are downloaded, not tracked.
+bin/
