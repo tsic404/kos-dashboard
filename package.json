@@ -1,0 +1,10 @@
+{
+  "name": "kos-dashboard-shell",
+  "private": true,
+  "type": "module",
+  "description": "Browser shell of the KOS desktop: ES modules served as they are, no build step and no runtime dependencies.",
+  "scripts": {
+    "check": "node --check pkg/bff/assets/shell/main.js",
+    "test": "node --test tests/shell/"
+  }
+}
