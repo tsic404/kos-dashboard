@@ -98,7 +98,7 @@ func Resolve(entry *unstructured.Unstructured, application *unstructured.Unstruc
 		view.Reason = "条目未声明所属应用"
 		return view, nil
 	}
-	if reason := unavailableReason(application, spec.Application); reason != "" {
+	if reason := UnavailableReason(application, spec.Application); reason != "" {
 		view.Reason = reason
 		return view, nil
 	}
@@ -117,10 +117,10 @@ func Resolve(entry *unstructured.Unstructured, application *unstructured.Unstruc
 	return view, nil
 }
 
-// unavailableReason answers why an entry cannot open its application. An entry
+// UnavailableReason answers why an entry cannot open its application. An entry
 // survives every application state, so the empty answer means the application is
 // usable and the caller resolves the endpoint.
-func unavailableReason(application *unstructured.Unstructured, name string) string {
+func UnavailableReason(application *unstructured.Unstructured, name string) string {
 	if application == nil || application.GetName() != name {
 		return "应用 " + name + " 未安装"
 	}
