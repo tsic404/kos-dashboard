@@ -29,10 +29,11 @@ func main() {
 
 // options is the process configuration the command line names.
 type options struct {
-	address      string
-	upstream     string
-	secure       bool
-	frameOrigins []string
+	address       string
+	upstream      string
+	secure        bool
+	frameOrigins  []string
+	consoleOrigin string
 }
 
 // parseOptions reads the process configuration. -frame-origin repeats, so every
@@ -43,6 +44,7 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&parsed.address, "address", ":8080", "listen address of the browser front")
 	flags.StringVar(&parsed.upstream, "upstream", "http://127.0.0.1:8081", "control-plane API base URL")
 	flags.BoolVar(&parsed.secure, "secure-cookies", false, "mark the session cookie Secure (set behind TLS)")
+	flags.StringVar(&parsed.consoleOrigin, "console-origin", "", "origin this front is served from; an application entry may never share it (KOSD-F-18)")
 	flags.Func("frame-origin", "application origin a window may frame (repeatable)", func(origin string) error {
 		if origin == "" {
 			return fmt.Errorf("frame-origin names no origin")
@@ -75,6 +77,7 @@ func run(args []string) error {
 		SealKey:       key,
 		SecureCookies: config.secure,
 		FrameOrigins:  config.frameOrigins,
+		ConsoleOrigin: config.consoleOrigin,
 	})
 	if err != nil {
 		return err

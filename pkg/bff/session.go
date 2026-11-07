@@ -119,6 +119,9 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	// The account is resolved before the session ends, because the control
+	// plane refuses a read with a revoked token.
+	account, accountErr := s.accountOf(r.Context(), token)
 	status, contentType, payload, err := s.callWithToken(r.Context(), http.MethodPost, "/api/v1/auth/logout", nil, token)
 	if err != nil {
 		writeFailure(w, http.StatusBadGateway, "internal", "控制面不可达："+err.Error(), "read")
@@ -129,6 +132,11 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_, _ = w.Write(payload)
 		return
+	}
+	// Signing out ends every application window and token the account holds
+	// (KOSD-C-75).
+	if accountErr == nil {
+		s.host.RevokeAccount(account)
 	}
 	s.clearSession(w)
 	w.WriteHeader(http.StatusNoContent)

@@ -47,22 +47,26 @@ func (s *Server) static(w http.ResponseWriter, r *http.Request) {
 }
 
 // contentSecurityPolicy is the policy every browser document is served with:
-// same-origin script, style and connection, and frames only for the origins an
-// application was installed for (KOSD-F-18).
-func contentSecurityPolicy(frameOrigins []string) string {
+// same-origin script, style and connection, and frames and images only for the
+// origins an application was installed for (KOSD-F-18, KOSD-C-75).
+func contentSecurityPolicy(configured, installed []string) string {
 	frames := []string{"'self'"}
-	for _, origin := range frameOrigins {
+	images := []string{"'self'", "data:"}
+	for _, origin := range append(append([]string(nil), configured...), installed...) {
 		trimmed := strings.TrimSpace(origin)
 		if trimmed == "" {
 			continue
 		}
 		frames = append(frames, trimmed)
+		if !strings.Contains(strings.Join(images, " "), trimmed) {
+			images = append(images, trimmed)
+		}
 	}
 	return strings.Join([]string{
 		"default-src 'self'",
 		"script-src 'self'",
 		"style-src 'self'",
-		"img-src 'self' data:",
+		"img-src " + strings.Join(images, " "),
 		"font-src 'self'",
 		"connect-src 'self'",
 		"frame-src " + strings.Join(frames, " "),
