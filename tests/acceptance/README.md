@@ -13,8 +13,12 @@
 | `DASH-TC-1/` | DASH-AC-1 / DASH-TC-1 桌面页逐项读取 | 本仓 |
 | `DASH-TC-59/` | DASH-AC-29 / DASH-TC-59 删除桌面条目不卸载 | 本仓 |
 | `DASH-TC-60/` | DASH-AC-29 / DASH-TC-60 下游改名后条目保持 | 本仓 |
+| `DASH-TC-140/` | DASH-AC-67 / DASH-TC-140 安装、打开与卸载窗口应用 | 本仓 |
+| `DASH-TC-141/` | DASH-AC-67 / DASH-TC-141 未声明、未安装与缺字段 | 本仓 |
 
 `DASH-TC-59` 与 `DASH-TC-60` 随桌面条目类从 `tsic404/kosd` 迁入；kosd 仓不再保留这两个目录。
+
+同一目录下的 `shell.test.js` 是用例的浏览器侧部分：它加载外壳模块，用假浏览器与假控制面回答驱动 dock、launcher、iframe 挂载与 `ready` 握手。`go test ./tests/...` 跑 Go 部分，`make js-test` 跑浏览器部分。
 
 ## 执行
 

@@ -119,6 +119,7 @@ func Declaration() extension.Declaration {
 			Pages: []extension.Page{DesktopPage()},
 			Preferences: []extension.PreferenceSchema{
 				{ID: PreferenceDock, Keys: []string{PreferenceLayout}},
+				{ID: PreferenceLauncher, Keys: []string{PreferenceLauncherLayout}},
 				{ID: PreferenceNotifications, Keys: []string{PreferenceRead}},
 			},
 		},

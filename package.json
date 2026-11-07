@@ -5,6 +5,6 @@
   "description": "Browser shell of the KOS desktop: ES modules served as they are, no build step and no runtime dependencies.",
   "scripts": {
     "check": "node --check pkg/bff/assets/shell/main.js",
-    "test": "node --test tests/shell/"
+    "test": "node --test tests/shell/*.test.js tests/acceptance/*/*.test.js"
   }
 }

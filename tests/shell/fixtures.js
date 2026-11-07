@@ -168,3 +168,100 @@ export const registry = {
     },
   ],
 };
+
+// A window application as the control plane reports one loaded `App`
+// contribution: the required manifest fields plus the declaring extension
+// (KOSD-C-73) and the two surfaces it appears on (DASH-C-30).
+export const filesApp = {
+  id: "files",
+  name: "文件",
+  version: "1.0.0",
+  icon: "https://files.apps.example.test/assets/icon.svg",
+  entry: "https://files.apps.example.test/index.html",
+  window: {
+    width: 900,
+    height: 640,
+    minWidth: 320,
+    minHeight: 240,
+    resizable: true,
+    mode: "single",
+    defaultState: "normal",
+  },
+  permissions: ["notifications"],
+  extension: "files-ext",
+  component: "files",
+  digest: "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  surfaces: ["launcher", "dock"],
+};
+
+export const notesApp = {
+  id: "notes",
+  name: "笔记",
+  version: "1.0.0",
+  icon: "assets/icon.svg",
+  entry: "https://notes.apps.example.test/index.html",
+  window: {
+    width: 800,
+    height: 600,
+    minWidth: 320,
+    minHeight: 240,
+    resizable: true,
+    mode: "multi",
+    defaultState: "normal",
+  },
+  permissions: [],
+  extension: "notes-ext",
+  component: "notes",
+  digest: "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  surfaces: ["launcher", "dock"],
+};
+
+export const appsAnswer = { items: [filesApp, notesApp], notReady: [] };
+
+export const dockView = {
+  schemaVersion: 1,
+  position: "bottom",
+  autoHide: false,
+  pinned: ["files"],
+  isStored: true,
+  applications: ["files", "notes"],
+};
+
+export const launcherView = {
+  schemaVersion: 1,
+  sort: "name",
+  categories: [],
+  isStored: true,
+  applications: ["files", "notes"],
+};
+
+// openAnswerFor renders one window registration answer for an application.
+// `hasToken` marks the instance as one that already delivered its token, which
+// is what the front answers a reopened single instance with (KOSD-C-75).
+export function openAnswerFor(app, { id = "win-1", isNew = true, hasToken = false } = {}) {
+  const origin = new URL(app.entry).origin;
+  return {
+    window: {
+      id,
+      appId: app.id,
+      account: "owner",
+      origin,
+      state: "opening",
+      isFocused: true,
+      defaultWidth: app.window.width,
+      defaultHeight: app.window.height,
+      defaultState: app.window.defaultState,
+      mode: app.window.mode,
+      openedAt: "2026-03-01T12:00:00Z",
+      expiresAt: "2026-03-01T12:10:00Z",
+      handshakeNonce: `nonce-${id}`,
+      hasToken,
+    },
+    isNew,
+    sandbox: "allow-scripts allow-same-origin",
+    // The signed address names the extension, the application, the version and
+    // the digest, so two applications of one package each have their own
+    // (KOSD-C-73).
+    frame: `${origin}/app-assets/${app.extension}/${app.id}/${app.version}/${app.digest}/index.html?kos-exp=1&kos-sig=signature`,
+  };
+}
