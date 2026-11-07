@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/tsic404/kos-dashboard/pkg/dock"
 )
 
 // hopHeaders are the connection-scoped headers a proxy never forwards.
@@ -28,7 +30,11 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusUnauthorized, "unauthenticated", "会话无效或已过期，请重新登录", "authorize")
 		return
 	}
-	request, err := s.upstreamRequest(r.Context(), r.Method, r.URL.Path, r.URL.RawQuery, r.Body, token)
+	body, ok := s.judgePreferenceWrite(w, r)
+	if !ok {
+		return
+	}
+	request, err := s.upstreamRequest(r.Context(), r.Method, r.URL.Path, r.URL.RawQuery, body, token)
 	if err != nil {
 		writeFailure(w, http.StatusBadGateway, "internal", "控制面请求无法构造", "read")
 		return
@@ -144,4 +150,64 @@ func singleJoiningSlash(left, right string) string {
 // decodeJSON decodes one JSON body.
 func decodeJSON(payload []byte, target any) error {
 	return json.Unmarshal(payload, target)
+}
+
+// judgePreferenceWrite validates a write to this product's own preference
+// domains before it reaches the control plane, so a value the desktop cannot
+// read back never lands in the account's store (DASH-C-27). A body of another
+// route is forwarded untouched.
+func (s *Server) judgePreferenceWrite(w http.ResponseWriter, r *http.Request) (io.Reader, bool) {
+	if r.Method != http.MethodPut {
+		return r.Body, true
+	}
+	key, matched := productPreferenceKey(r.URL.Path)
+	if !matched {
+		return r.Body, true
+	}
+	body, err := readBody(r)
+	if err != nil {
+		writeFailure(w, http.StatusBadRequest, "invalid_request", "偏好值无法读取", "validate")
+		return nil, false
+	}
+	var request struct {
+		Value string `json:"value"`
+	}
+	if err := decodeJSON(body, &request); err != nil {
+		writeFailure(w, http.StatusBadRequest, "invalid_request", "偏好请求体不是合法 JSON", "validate")
+		return nil, false
+	}
+	if err := validateProductPreference(key, request.Value); err != nil {
+		writeFailure(w, http.StatusBadRequest, "invalid_request", err.Error(), "validate")
+		return nil, false
+	}
+	return bytes.NewReader(body), true
+}
+
+// productPreferenceKey names the key of one write to this product's preference
+// domains. A path outside them matches nothing.
+func productPreferenceKey(path string) (string, bool) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 5 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "preferences" {
+		return "", false
+	}
+	if parts[3] != dock.Identifier {
+		return "", false
+	}
+	return parts[4], true
+}
+
+// validateProductPreference judges one value against its key's declaration.
+func validateProductPreference(key, value string) error {
+	switch key {
+	case dock.PreferenceLayout:
+		_, err := dock.ParseDockLayout(value)
+		return err
+	case dock.PreferenceLauncherLayout:
+		_, err := dock.ParseLauncherLayout(value)
+		return err
+	default:
+		// Keys this product declares without a value schema carry opaque
+		// values; the control plane already refuses undeclared keys.
+		return nil
+	}
 }
