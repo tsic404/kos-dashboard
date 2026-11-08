@@ -265,3 +265,55 @@ export function openAnswerFor(app, { id = "win-1", isNew = true, hasToken = fals
     frame: `${origin}/app-assets/${app.extension}/${app.id}/${app.version}/${app.digest}/index.html?kos-exp=1&kos-sig=signature`,
   };
 }
+
+// windowOf renders one desktop window of a browser session (DASH-C-74): the
+// manifest's default rectangle, its instance key and the state it settled to.
+export function windowOf(app, { id = "window-1", instance = 1, state = "normal", workspace = "main", address = "", focused = true, bounds = null } = {}) {
+  const rectangle = bounds || { x: 0, y: 0, width: app.window.width, height: app.window.height };
+  return {
+    id,
+    application: app.id,
+    instance,
+    state,
+    bounds: { ...rectangle },
+    restore: { ...rectangle },
+    workspace,
+    z: instance,
+    isFocused: focused,
+    ...(address ? { address } : {}),
+  };
+}
+
+// sessionOf renders one window-session answer. The taskbar is the front's
+// answer for the current workspace, so it never carries another workspace's
+// window or one in its error state (DASH-C-74).
+export function sessionOf(windows, { workspaces = ["main"], currentWorkspace = "main", address = "", instances = null, taskbar = null } = {}) {
+  const live = windows.filter(
+    (window) => window.workspace === currentWorkspace && window.state !== "error" && window.state !== "closing",
+  );
+  return {
+    windows,
+    workspaces,
+    currentWorkspace,
+    taskbar: taskbar || live,
+    address,
+    appInstances: instances || Object.fromEntries(windows.map((window) => [window.id, `instance-${window.instance}`])),
+  };
+}
+
+// openSessionFor renders one window-session open answer: the desktop window,
+// the application instance that mounts it and the signed frame address
+// (DASH-C-74, KOSD-C-75).
+export function openSessionFor(app, options = {}) {
+  const window = options.window || windowOf(app, options);
+  const instanceID = options.instanceId || `instance-${window.instance}`;
+  const answer = openAnswerFor(app, { id: instanceID, isNew: options.isNew ?? true, hasToken: options.hasToken ?? false });
+  return {
+    ...sessionOf(options.windows || [window], { address: window.address || "" }),
+    window,
+    instance: answer.window,
+    sandbox: answer.sandbox,
+    frame: answer.frame,
+    isNew: answer.isNew,
+  };
+}

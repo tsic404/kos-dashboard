@@ -10,9 +10,9 @@ import { dockView, filesApp, notesApp } from "./fixtures.js";
 
 test("dock 按账号布局的顺序渲染应用、运行指示与窗口计数", () => {
   const windows = [
-    { id: "win-1", appId: "files", state: "normal" },
-    { id: "win-2", appId: "files", state: "normal" },
-    { id: "win-3", appId: "notes", state: "error" },
+    { id: "win-1", application: "files", state: "normal" },
+    { id: "win-2", application: "files", state: "normal" },
+    { id: "win-3", application: "notes", state: "error" },
   ];
   const html = renderDock({
     dock: { ...dockView, applications: ["notes", "files"] },
@@ -57,7 +57,7 @@ test("dock 右键菜单提供打开、固定与关闭窗口", () => {
   const html = renderDock({
     dock: { ...dockView, pinned: ["files"] },
     apps: [filesApp],
-    windows: [{ id: "win-1", appId: "files", state: "normal" }],
+    windows: [{ id: "win-1", application: "files", state: "normal" }],
     menu: { kind: "app", appId: "files" },
   });
   assert.match(html, /data-menu="app" data-app="files"/);

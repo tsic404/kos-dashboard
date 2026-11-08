@@ -50,15 +50,15 @@ export function iconURL(app) {
 
 // windowCounts counts the live windows of every application. A window in its
 // error state has no frame left, so it never marks an application as running
-// (DASH-C-30).
+// (DASH-C-30, DASH-C-74).
 const LIVE_STATES = new Set(["opening", "normal", "minimized", "maximized", "fullscreen", "snapped"]);
 
 export function windowCounts(windows) {
   const counts = new Map();
   for (const window of Array.isArray(windows) ? windows : []) {
-    if (!window || typeof window.appId !== "string") continue;
+    if (!window || typeof window.application !== "string") continue;
     if (!LIVE_STATES.has(window.state)) continue;
-    counts.set(window.appId, (counts.get(window.appId) || 0) + 1);
+    counts.set(window.application, (counts.get(window.application) || 0) + 1);
   }
   return counts;
 }

@@ -1,8 +1,8 @@
-// The application host: the frame mounts only the signed address the front
-// returned with the declared sandbox, the `ready` handshake is judged against
-// the window's origin and frame, the token is delivered once, and an uninstalled
-// application leaves its open window in the error state (KOSD-C-73, KOSD-C-75,
-// DASH-C-30).
+// The frame host: a window's frame mounts only the signed address the front
+// returned with the declared sandbox, the `ready` handshake is judged against the
+// instance's origin and frame, the token is delivered once, and a frame that
+// stops running is reported instead of inventing a window state
+// (KOSD-C-73, KOSD-C-75, DASH-C-74).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -12,34 +12,61 @@ import { filesApp, notesApp, openAnswerFor } from "./fixtures.js";
 import { fakeDocument, fakeElement, fakeWindow } from "./harness.js";
 
 const filesOrigin = "https://files.apps.example.test";
+const init = {
+  type: "init",
+  token: "token-1",
+  theme: "system",
+  capabilities: ["notifications"],
+  expiresAt: "2099-01-01T00:00:00Z",
+};
 
-// hostFor builds one host with a recorded transport. The handshake answer is
-// the init payload the front sends once.
-function hostFor({ init = { type: "init", token: "token-1", theme: "system", capabilities: ["notifications"], expiresAt: "2099-01-01T00:00:00Z" } } = {}) {
+// hostFor builds one frame host with a recorded transport. A failure the host
+// reports is what the front would turn into a window state.
+function hostFor({ answer = init, loadTimeout = 20000, aliveTimeout = 35000 } = {}) {
   const calls = [];
   const api = {
     write: async (method, path, body) => {
       calls.push({ method, path, body });
-      if (path.endsWith("/handshake")) return init;
+      if (path.endsWith("/handshake")) return answer;
       return null;
     },
   };
   const document = fakeDocument();
-  const container = fakeElement("div");
   const window = fakeWindow();
-  const host = createAppHost({ api, document, container, window, consoleOrigin: "https://console.example.test" });
-  return { host, calls, container, window };
+  const failures = [];
+  const alives = [];
+  const unsaved = [];
+  const host = createAppHost({
+    api,
+    document,
+    window,
+    consoleOrigin: "https://console.example.test",
+    loadTimeout,
+    aliveTimeout,
+    onFailure: (windowId, reason) => failures.push({ windowId, reason }),
+    onAlive: (windowId) => alives.push(windowId),
+    onUnsaved: (windowId, value) => unsaved.push({ windowId, unsaved: value }),
+  });
+  return { host, calls, window, failures, alives, unsaved };
 }
 
-// mountFiles registers one files window and returns its parts.
-function mountFiles(harness, answer = openAnswerFor(filesApp)) {
-  harness.host.mount(answer, filesApp);
-  const node = harness.container.children[0];
-  const body = node.children[0];
-  return { node, body, frame: body.children[0], answer };
+// mountWindow mounts one answer's frame into a fresh body the way the window
+// layer does.
+function mountWindow(harness, answer = openAnswerFor(filesApp), windowId = "window-1") {
+  const body = fakeElement("div");
+  const record = harness.host.mount(
+    {
+      windowId,
+      instance: answer.window,
+      frame: answer.frame,
+      sandbox: answer.sandbox,
+      name: filesApp.name,
+    },
+    body,
+  );
+  return { body, record, frame: body.children[0] };
 }
 
-// tick waits for one settled promise chain.
 function tick() {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -53,27 +80,26 @@ async function waitFor(predicate, label) {
   assert.fail(`timed out waiting for ${label}`);
 }
 
-test("窗口按清单默认尺寸挂载签名地址上的 iframe，沙箱取后端的声明", () => {
+test("frame 挂载签名地址，沙箱与 console origin 取后端的声明", () => {
   const harness = hostFor();
   const answer = openAnswerFor(filesApp);
-  const { node, frame } = mountFiles(harness, answer);
-  assert.equal(node.getAttribute("data-window"), "win-1");
-  assert.equal(node.getAttribute("data-app"), "files");
-  assert.equal(node.getAttribute("data-state"), "opening");
-  assert.equal(node.style.values.get("--window-width"), "900px");
-  assert.equal(node.style.values.get("--window-height"), "640px");
+  const { frame } = mountWindow(harness, answer);
   assert.equal(frame.getAttribute("sandbox"), "allow-scripts allow-same-origin");
   const source = frame.getAttribute("src");
   assert.equal(new URL(source).origin, filesOrigin);
   assert.equal(new URL(source).searchParams.get("kos-console"), "https://console.example.test");
-  assert.equal(new URL(source).searchParams.get("kos-window"), "win-1");
+  // The frame names the application instance the handshake authenticates.
+  assert.equal(new URL(source).searchParams.get("kos-window"), answer.window.id);
+  // The signed address is mounted as the front issued it (KOSD-C-73).
+  assert.equal(new URL(source).pathname, new URL(answer.frame).pathname, "外壳改写了签名资产地址");
   assert.equal(new URL(source).searchParams.get("kos-sig"), "signature");
+  assert.ok(!source.includes("kubeconfig"), "frame 地址携带了集群凭据");
   assert.ok(!frame.getAttribute("sandbox").includes("allow-top-navigation"), "沙箱允许了顶层导航");
 });
 
 test("来源、发送者或消息形状不符的 ready 被忽略，不产生握手", async () => {
   const harness = hostFor();
-  const { frame } = mountFiles(harness);
+  const { frame } = mountWindow(harness);
   harness.window.message({ origin: "https://evil.example.test", source: frame.contentWindow, data: { type: "ready" } });
   harness.window.message({ origin: filesOrigin, source: {}, data: { type: "ready" } });
   harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "something-else" } });
@@ -84,152 +110,71 @@ test("来源、发送者或消息形状不符的 ready 被忽略，不产生握�
 
 test("正确来源的 ready 完成握手，init 只发一次且目标 origin 明确", async () => {
   const harness = hostFor();
-  const { frame, answer } = mountFiles(harness);
-  harness.window.message({
-    origin: filesOrigin,
-    source: frame.contentWindow,
-    data: { type: "ready", window: "win-1" },
-  });
-  await waitFor(() => harness.calls.length === 1, "the handshake call");
+  const answer = openAnswerFor(filesApp);
+  const { body, frame } = mountWindow(harness, answer);
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready", window: answer.window.id } });
   await waitFor(() => frame.messages.length === 1, "the init message");
   const call = harness.calls[0];
   assert.equal(call.method, "POST");
-  assert.equal(call.path, "/api/v1/windows/win-1/handshake");
+  assert.equal(call.path, `/api/v1/windows/${answer.window.id}/handshake`);
   assert.equal(call.body.origin, filesOrigin);
   assert.equal(call.body.nonce, answer.window.handshakeNonce);
   assert.deepEqual(JSON.parse(Buffer.from(call.body.message, "base64").toString()), {
     type: "ready",
-    window: "win-1",
+    window: answer.window.id,
   });
-  assert.equal(frame.messages.length, 1, "init 没有送达 frame");
   assert.equal(frame.messages[0].targetOrigin, filesOrigin);
   assert.equal(frame.messages[0].payload.token, "token-1");
+  assert.equal(body.getAttribute("data-handshaked"), "true");
 
-  harness.window.message({
-    origin: filesOrigin,
-    source: frame.contentWindow,
-    data: { type: "ready", window: "win-1" },
-  });
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready", window: answer.window.id } });
   await tick();
   assert.equal(harness.calls.length, 1, "第二次 ready 又换了一个令牌");
 });
 
-test("资产地址不在应用 origin 上时窗口进入错误态且不加载 frame", () => {
-  const harness = hostFor();
-  const answer = openAnswerFor(filesApp);
-  answer.frame = "https://evil.example.test/app.js";
-  harness.host.mount(answer, filesApp);
-  const node = harness.container.children[0];
-  assert.equal(node.getAttribute("data-state"), "error");
-  assert.equal(node.children[0].children.length, 0, "错误态仍挂载了 frame");
-});
-
-test("应用卸载后已打开窗口进入错误态且 frame 被销毁，其他应用不受影响", () => {
-  const harness = hostFor();
-  mountFiles(harness, openAnswerFor(filesApp, { id: "win-files" }));
-  harness.host.mount(openAnswerFor(notesApp, { id: "win-notes" }), notesApp);
-  harness.host.reconcile({
-    apps: [notesApp],
-    windows: [
-      { id: "win-files", appId: "files", state: "error" },
-      { id: "win-notes", appId: "notes", state: "normal" },
-    ],
+test("令牌过期时 frame 被移除并把原因报告给窗口层", async () => {
+  const harness = hostFor({
+    answer: { type: "init", token: "token-1", theme: "system", capabilities: [], expiresAt: "2000-01-01T00:00:00Z" },
   });
-  const filesNode = harness.container.children[0];
-  const notesNode = harness.container.children[1];
-  assert.equal(filesNode.getAttribute("data-state"), "error");
-  assert.equal(filesNode.getAttribute("data-error"), "应用已卸载，窗口已进入错误态");
-  assert.ok(filesNode.children[0].innerHTML.includes("窗口已进入错误态"), "错误态没有给出原因");
-  assert.equal(filesNode.children[0].children.length, 0, "错误态仍保留 frame");
-  assert.equal(notesNode.getAttribute("data-state"), "normal");
-  assert.equal(notesNode.children[0].children.length, 1, "其他应用的窗口被销毁了");
-});
-
-test("关窗移除本地窗口并请求后端撤销令牌", async () => {
-  const harness = hostFor();
-  mountFiles(harness);
-  await harness.host.close("win-1");
-  assert.deepEqual(harness.calls.map((call) => `${call.method} ${call.path}`), ["DELETE /api/v1/windows/win-1"]);
-  assert.equal(harness.container.children.length, 0);
+  const answer = openAnswerFor(filesApp);
+  const { body, frame } = mountWindow(harness, answer);
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready" } });
+  await waitFor(() => harness.failures.length === 1, "the expiry to be reported");
+  assert.equal(harness.failures[0].windowId, "window-1");
+  assert.match(harness.failures[0].reason, /过期/);
+  assert.equal(body.children.length, 0, "过期后仍保留 frame");
   assert.deepEqual(harness.host.records(), []);
 });
 
-// hostWith builds one host over a scripted transport, so a case can answer the
-// registration with the instance a reload or another window would see.
-function hostWith(write) {
-  const document = fakeDocument();
-  const container = fakeElement("div");
-  const window = fakeWindow();
-  const host = createAppHost({ api: { write }, document, container, window, consoleOrigin: "https://console.example.test" });
-  return { host, container, window };
-}
-
-test("本地没有记录且实例已交付令牌时：先关闭旧实例，再注册可重新握手的实例", async () => {
-  const init = { type: "init", token: "token-1", theme: "system", capabilities: [], expiresAt: "2099-01-01T00:00:00Z" };
-  const answers = [
-    openAnswerFor(filesApp, { isNew: false, hasToken: true }),
-    openAnswerFor(filesApp, { id: "win-2" }),
+test("沙箱、origin 与签名地址不合规时拒绝挂载并报告失败", () => {
+  const cases = [
+    { apply: (answer) => ({ ...answer, sandbox: "" }), reason: /沙箱/ },
+    { apply: (answer) => ({ ...answer, frame: "https://evil.example.test/app.js" }), reason: /origin/ },
+    { apply: (answer) => ({ ...answer, frame: "" }), reason: /资产地址/ },
+    { apply: (answer) => ({ ...answer, window: { ...answer.window, origin: "" } }), reason: /绝对地址/ },
   ];
-  const calls = [];
-  const { host, container, window } = hostWith(async (method, path) => {
-    calls.push(`${method} ${path}`);
-    if (method === "POST" && path === "/api/v1/apps/files/windows") return answers.shift();
-    if (method === "DELETE") return null;
-    if (path.endsWith("/handshake")) return init;
-    return null;
-  });
+  for (const one of cases) {
+    const harness = hostFor();
+    const answer = one.apply(openAnswerFor(filesApp));
+    const { body } = mountWindow(harness, answer);
+    assert.equal(body.children.length, 0, "不合规的 frame 被挂载了");
+    assert.equal(harness.failures.length, 1, "不合规的 frame 没有报告失败");
+    assert.match(harness.failures[0].reason, one.reason);
+  }
+});
 
-  const answer = await host.open(filesApp);
-  assert.equal(answer.window.id, "win-2");
+test("卸载与登出移除 frame，records 只列仍挂载的窗口", () => {
+  const harness = hostFor();
+  mountWindow(harness, openAnswerFor(filesApp), "window-1");
+  mountWindow(harness, openAnswerFor(notesApp, { id: "instance-notes" }), "window-2");
   assert.deepEqual(
-    calls,
-    [
-      "POST /api/v1/apps/files/windows",
-      "DELETE /api/v1/windows/win-1",
-      "POST /api/v1/apps/files/windows",
-    ],
-    "刷新后的恢复没有先关闭已交付令牌的实例",
+    harness.host.records().map((record) => record.windowId),
+    ["window-1", "window-2"],
   );
-
-  host.mount(answer, filesApp);
-  const frame = container.children[0].children[0].children[0];
-  window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready", window: "win-2" } });
-  await waitFor(() => frame.messages.length === 1, "the recovered handshake");
-  assert.equal(frame.messages[0].payload.token, "token-1");
-  assert.ok(calls.includes("POST /api/v1/windows/win-2/handshake"), "新实例没有用新 nonce 握手");
-});
-
-test("已挂载的实例再次打开只聚焦，不关闭也不重新注册", async () => {
-  const calls = [];
-  const { host } = hostWith(async (method, path) => {
-    calls.push(`${method} ${path}`);
-    if (path === "/api/v1/apps/files/windows") return openAnswerFor(filesApp, { isNew: false, hasToken: true });
-    return null;
-  });
-  host.mount(openAnswerFor(filesApp), filesApp);
-
-  const answer = await host.open(filesApp);
-  assert.equal(answer.window.id, "win-1");
-  assert.deepEqual(calls, ["POST /api/v1/apps/files/windows"], "已挂载实例的再次打开被关闭或重新注册");
-});
-
-test("本地没有记录但实例未交付令牌时直接复用，不关闭也不再注册", async () => {
-  const init = { type: "init", token: "token-1", theme: "system", capabilities: [], expiresAt: "2099-01-01T00:00:00Z" };
-  const calls = [];
-  const { host, container, window } = hostWith(async (method, path) => {
-    calls.push(`${method} ${path}`);
-    if (path === "/api/v1/apps/files/windows") return openAnswerFor(filesApp, { isNew: false });
-    if (path.endsWith("/handshake")) return init;
-    return null;
-  });
-
-  const answer = await host.open(filesApp);
-  assert.equal(answer.window.id, "win-1");
-  host.mount(answer, filesApp);
-  const frame = container.children[0].children[0].children[0];
-  window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready", window: "win-1" } });
-  await waitFor(() => frame.messages.length === 1, "the handshake of the reused instance");
-  assert.deepEqual(calls.filter((call) => call.startsWith("DELETE")), [], "未交付令牌的实例被关闭");
+  harness.host.unmount("window-1");
+  assert.deepEqual(harness.host.records().map((record) => record.windowId), ["window-2"]);
+  harness.host.closeAll();
+  assert.deepEqual(harness.host.records(), []);
 });
 
 test("消息形状的判定与编码如实反映握手约定", () => {
@@ -244,4 +189,62 @@ test("消息形状的判定与编码如实反映握手约定", () => {
     Buffer.from(encodeMessage({ type: "ready" }), "base64").toString(),
     JSON.stringify({ type: "ready" }),
   );
+});
+
+test("应用上报未保存与存活：来源与结构不符的消息被忽略，正确的消息交给窗口层", async () => {
+  const harness = hostFor();
+  const answer = openAnswerFor(filesApp);
+  const { frame } = mountWindow(harness, answer);
+
+  // Before the handshake the frame has not proven it is the instance.
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "alive" } });
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "unsaved", unsaved: true } });
+  assert.deepEqual(harness.alives, []);
+  assert.deepEqual(harness.unsaved, []);
+
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready" } });
+  await waitFor(() => frame.messages.length === 1, "the handshake");
+
+  harness.window.message({ origin: "https://evil.example.test", source: frame.contentWindow, data: { type: "alive" } });
+  harness.window.message({ origin: filesOrigin, source: {}, data: { type: "alive" } });
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "alive", window: "another" } });
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "unsaved", unsaved: "yes" } });
+  assert.deepEqual(harness.alives, []);
+  assert.deepEqual(harness.unsaved, []);
+
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "alive", window: answer.window.id } });
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "unsaved", unsaved: true } });
+  assert.deepEqual(harness.alives, ["window-1"]);
+  assert.deepEqual(harness.unsaved, [{ windowId: "window-1", unsaved: true }]);
+});
+
+test("应用未在限定时间内完成握手时报告失败", async () => {
+  const harness = hostFor({ loadTimeout: 5 });
+  mountWindow(harness);
+  await waitFor(() => harness.failures.length === 1, "the load timeout");
+  assert.equal(harness.failures[0].windowId, "window-1");
+  assert.match(harness.failures[0].reason, /加载/);
+  assert.deepEqual(harness.host.records(), []);
+});
+
+test("握手后应用停止上报存活时报告心跳超时", async () => {
+  const harness = hostFor({ aliveTimeout: 5 });
+  const { frame } = mountWindow(harness);
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready" } });
+  await waitFor(() => frame.messages.length === 1, "the handshake");
+  await waitFor(() => harness.failures.length === 1, "the liveness timeout");
+  assert.match(harness.failures[0].reason, /心跳超时/);
+});
+
+test("应用持续上报存活时不会超时", async () => {
+  const harness = hostFor({ aliveTimeout: 20 });
+  const { frame } = mountWindow(harness);
+  harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "ready" } });
+  await waitFor(() => frame.messages.length === 1, "the handshake");
+  for (let round = 0; round < 3; round += 1) {
+    harness.window.message({ origin: filesOrigin, source: frame.contentWindow, data: { type: "alive" } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.deepEqual(harness.failures, [], "上报存活的应用被判成了超时");
+  assert.equal(harness.alives.length, 3);
 });

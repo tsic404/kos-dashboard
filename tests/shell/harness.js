@@ -14,15 +14,18 @@ export function reply(status, body) {
   };
 }
 
-// fakeFetch answers by "METHOD PATH" and records what the shell sent.
+// fakeFetch answers by "METHOD PATH" and records what the shell sent. A route
+// handler receives the recorded call, so a case can answer differently for two
+// bodies sent to the same path.
 export function fakeFetch(routes) {
   const calls = [];
   const fetch = async (path, init = {}) => {
     const method = init.method || "GET";
-    calls.push({ method, path, headers: init.headers || {}, body: init.body });
+    const call = { method, path, headers: init.headers || {}, body: init.body };
+    calls.push(call);
     const handler = routes[`${method} ${path}`];
     if (!handler) return reply(404, { error: { code: "not_found", message: "missing", stage: "read" } });
-    return handler();
+    return handler(call);
   };
   return { fetch, calls };
 }
@@ -143,10 +146,20 @@ export function fakeDocument() {
   };
 }
 
-// fakeWindow carries the message listener the host registers.
-export function fakeWindow() {
+// fakeWindow carries the message listener the host registers, the viewport a
+// snapped window fills half of, and the history the shell writes addresses to.
+export function fakeWindow({ innerWidth = 1440, innerHeight = 900 } = {}) {
   const listeners = new Map();
+  const history = {
+    entries: [],
+    pushState(state, _title, path) {
+      history.entries.push(path);
+    },
+  };
   return {
+    innerWidth,
+    innerHeight,
+    history,
     addEventListener(name, handler) {
       if (!listeners.has(name)) listeners.set(name, []);
       listeners.get(name).push(handler);

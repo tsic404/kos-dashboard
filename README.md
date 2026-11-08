@@ -16,6 +16,7 @@ KOS 桌面项目：浏览器桌面与 BFF — 桌面、窗口、dock、launcher�
 | 包 | 职责 |
 |---|---|
 | `pkg/dock` | 桌面条目对象类（DASH-C-30）、桌面页声明（DASH-C-52）、dock 偏好域（DASH-C-27）、条目生命周期控制器（KOSD-C-19/20） |
+| `pkg/wm` | 窗口管理器：状态机、会话窗口集合、几何、z-order、焦点、吸附、工作区与多显示器（DASH-C-74）；布局记录 seam 与迁移的尺寸/布局编解码（DASH-C-27） |
 | `pkg/desktop` | 桌面页投影：条目、已安装应用、最近使用与通知中心，逐项带来源（KOSD-C-53） |
 | `pkg/apphost` | 窗口应用：`App` 清单装载与校验（KOSD-C-73）、launcher/dock 共用清单、窗口实例与短期应用令牌、`ready` 握手、权限确认与撤销、审计（KOSD-C-75、KOSD-C-14）、资产地址签名 |
 | `pkg/bff` | 会话引导与登录代理、控制面 API 代理与错误包络、事件 SSE、CSRF/CSP、应用宿主路由、静态资产 |
@@ -39,8 +40,12 @@ KOS 桌面项目：浏览器桌面与 BFF — 桌面、窗口、dock、launcher�
 | `render.js` | 纯渲染函数：导航、页面、四类展示项、通知已读状态、只读与陈旧标记、按角色裁剪动作入口、错误包络 |
 | `recent.js` | 本地源：浏览器存储中的最近使用 |
 | `stream.js` | 事件流订阅；断流时保留上次观测并标陈旧 |
-| `app.js` | 外壳状态：会话、注册表、当前页面、动作提交（写入体原样带上）、事件流刷新 |
-| `main.js` | 浏览器入口：把外壳接到文档与事件上 |
+| `windows.js` | 浏览器会话的窗口集合客户端：打开、聚焦、状态转移、吸附、工作区、未保存与关窗否决、心跳、崩溃与重启、地址跟随（DASH-C-74） |
+| `windowbar.js` | 纯渲染：任务栏（只列当前工作区的运行窗口、新建工作区）、窗口条按状态给出的转移按钮与工作区分组、错误窗口的重启与关闭（DASH-C-74） |
+| `windowlayer.js` | 窗口节点层：每个会话窗口一个节点，状态、几何、z-order 与焦点写到节点上；frame 挂在节点正文，状态变化不重建文档（DASH-C-74、KOSD-C-75） |
+| `apphost.js` | 应用 frame 宿主：校验签名地址与沙箱，按窗口实例完成 `ready` 握手并只交付一次 `init`，转发应用在上报通道给出的未保存与存活（`unsaved`/`alive`）；加载或存活超时、令牌到期都把 frame 报告给窗口层（KOSD-C-75、DASH-C-74） |
+| `app.js` | 外壳状态：会话、注册表、当前页面、动作提交（写入体原样带上）、事件流刷新，以及 dock/launcher 与窗口会话、任务栏、地址的接线 |
+| `main.js` | 浏览器入口：把外壳接到文档、事件与浏览器历史上 |
 
 ## 构建与运行
 
@@ -84,6 +89,18 @@ KOS_DASHBOARD_SESSION_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n=') \
 | `GET /app-assets/{extension}/{app}/{version}/{digest}/{path}` | 应用 UI 资产：按扩展、应用、版本与包摘要寻址，校验覆盖路径的短期签名与到期；只在应用 origin 上分发，不在控制台 origin 提供（KOSD-C-73、KOSD-F-18） |
 | `GET /api/v1/dock` | 账号的 dock 布局与按固定顺序排列的应用；未写入时答默认值（DASH-C-27、DASH-C-30） |
 | `GET /api/v1/launcher` | 账号的 launcher 布局与应用列表；未写入时答默认值（DASH-C-27） |
+| `GET /api/v1/desktop/windows` | 本浏览器会话的窗口集合：窗口、工作区、当前工作区的任务栏、焦点窗口的地址与每个窗口的应用实例（DASH-C-74） |
+| `POST /api/v1/desktop/windows` | 按清单默认值打开窗口；单例重复打开与同一深链只聚焦，多实例每个新深链一处实例（DASH-C-74、KOSD-C-73） |
+| `DELETE /api/v1/desktop/windows/{window}` | 请求关窗；未保存时第一次被否决（`close_vetoed`），再次请求销毁窗口与 iframe（DASH-C-74） |
+| `POST /api/v1/desktop/windows/{window}/focus` | 置顶并切换焦点；地址跟随焦点窗口（DASH-C-74） |
+| `PUT /api/v1/desktop/windows/{window}/state` | 状态转移：`minimized` / `normal` / `maximized` / `fullscreen` / `snapped`（带 `edge` 与 `viewport`），恢复回原边界（DASH-C-74） |
+| `PUT /api/v1/desktop/windows/{window}/bounds` | 普通窗口的移动与缩放（会话内几何，布局单负责持久化） |
+| `PUT /api/v1/desktop/windows/{window}/workspace` | 把窗口移入工作区 |
+| `PUT /api/v1/desktop/windows/{window}/unsaved` | 记录应用报告的未保存状态，驱动一次关闭否决 |
+| `POST /api/v1/desktop/windows/{window}/heartbeat` | 窗口心跳；首次心跳之后超时未再心跳进入 `error`（DASH-C-74） |
+| `POST /api/v1/desktop/windows/{window}/crash` | 窗口崩溃进入 `error`，提供重启与关闭 |
+| `POST /api/v1/desktop/windows/{window}/restart` | 重启错误窗口：实例键不变，应用实例与令牌换新（DASH-C-74） |
+| `GET/POST /api/v1/desktop/workspaces` | 列出工作区 / 切换当前工作区；任务栏只列当前工作区的窗口（DASH-C-74） |
 | `/api/v1/*` | 控制面 API 代理；响应与错误包络原样透传（KOSD-C-12） |
 | `GET /healthz` | 自身健康，带观测时间 |
 | `/` | 浏览器入口与静态资产 |
@@ -110,6 +127,10 @@ make acceptance  # 只跑 tests/acceptance，一条命令
 | `tests/acceptance/DASH-TC-60/` | 下游工作负载与入口改名后条目仍指向同一应用，可见性与排序不变，解析地址随入口更新 |
 | `tests/acceptance/DASH-TC-140/` | 安装声明窗口应用的扩展后两处出现入口，打开为清单默认尺寸且单例聚焦；卸载后入口消失、已打开窗口进入错误态且不能重开，其他应用不受影响 |
 | `tests/acceptance/DASH-TC-141/` | 清单缺必填项的组件不就绪且无入口；只声明页面的扩展无窗口入口而页面仍在导航；未声明或未安装的深链不解析、不建窗 |
+| `tests/acceptance/DASH-TC-61/` | 打开同一应用的两个窗口，关闭一个后再关闭全部；每次关闭与应用阶段、副本数与下游对象无关 |
+| `tests/acceptance/DASH-TC-145/` | 最小化、恢复、最大化、全屏、吸附到左半屏、恢复的状态与恢复边界；未保存时第一次关闭被否决，第二次销毁 |
+| `tests/acceptance/DASH-TC-146/` | 单例两个深链只聚焦；多实例两个深链各有实例键；地址随焦点与关闭更新 |
+| `tests/acceptance/DASH-TC-147/` | 崩溃与心跳超时进入错误态并可重启且实例键不变；任务栏只显示当前工作区窗口；全程应用阶段与副本数不变 |
 
 ## 依赖
 

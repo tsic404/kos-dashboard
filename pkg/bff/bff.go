@@ -97,6 +97,7 @@ type Server struct {
 	assets            fs.FS
 	apps              apphost.Source
 	host              *apphost.Host
+	windows           *windowSessions
 	assetTTL          time.Duration
 	validation        apphost.ValidationOptions
 	configuredOrigins []string
@@ -164,6 +165,7 @@ func New(config Config) (*Server, error) {
 	if server.host == nil {
 		server.host = apphost.New(apphost.Config{Now: server.now, Auditor: config.Auditor})
 	}
+	server.windows = newWindowSessions(server.now)
 	server.csp = contentSecurityPolicy(config.FrameOrigins, nil)
 	return server, nil
 }
@@ -191,6 +193,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST "+capabilityUsePath, s.useCapability)
 	mux.HandleFunc("GET "+dockLayoutPath, s.dockLayout)
 	mux.HandleFunc("GET "+launcherLayoutPath, s.launcherLayout)
+	mux.HandleFunc("GET "+desktopWindowsPath, s.listDesktopWindows)
+	mux.HandleFunc("POST "+desktopWindowsPath, s.openDesktopWindow)
+	mux.HandleFunc("DELETE "+desktopWindowPath, s.closeDesktopWindow)
+	mux.HandleFunc("POST "+desktopWindowFocusPath, s.focusDesktopWindow)
+	mux.HandleFunc("PUT "+desktopWindowStatePath, s.stateDesktopWindow)
+	mux.HandleFunc("PUT "+desktopWindowBoundsPath, s.boundsDesktopWindow)
+	mux.HandleFunc("PUT "+desktopWindowWorkspacePath, s.workspaceDesktopWindow)
+	mux.HandleFunc("PUT "+desktopWindowUnsavedPath, s.unsavedDesktopWindow)
+	mux.HandleFunc("POST "+desktopWindowHeartbeatPath, s.heartbeatDesktopWindow)
+	mux.HandleFunc("POST "+desktopWindowCrashPath, s.crashDesktopWindow)
+	mux.HandleFunc("POST "+desktopWindowRestartPath, s.restartDesktopWindow)
+	mux.HandleFunc("GET "+desktopWorkspacesPath, s.listDesktopWorkspaces)
+	mux.HandleFunc("POST "+desktopWorkspacesPath, s.switchDesktopWorkspace)
 	mux.HandleFunc("DELETE "+windowPath, s.closeWindow)
 	mux.HandleFunc("/api/v1/", s.proxy)
 	mux.HandleFunc("GET /healthz", s.health)

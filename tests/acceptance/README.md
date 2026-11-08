@@ -13,16 +13,23 @@
 | `DASH-TC-1/` | DASH-AC-1 / DASH-TC-1 桌面页逐项读取 | 本仓 |
 | `DASH-TC-59/` | DASH-AC-29 / DASH-TC-59 删除桌面条目不卸载 | 本仓 |
 | `DASH-TC-60/` | DASH-AC-29 / DASH-TC-60 下游改名后条目保持 | 本仓 |
+| `DASH-TC-61/` | DASH-AC-30 / DASH-TC-61 关闭全部窗口 | 本仓 |
 | `DASH-TC-140/` | DASH-AC-67 / DASH-TC-140 安装、打开与卸载窗口应用 | 本仓 |
 | `DASH-TC-141/` | DASH-AC-67 / DASH-TC-141 未声明、未安装与缺字段 | 本仓 |
+| `DASH-TC-145/` | DASH-AC-69 / DASH-TC-145 状态转移与关闭否决 | 本仓 |
+| `DASH-TC-146/` | DASH-AC-69 / DASH-TC-146 单例、多实例与深链 | 本仓 |
+| `DASH-TC-147/` | DASH-AC-69 / DASH-TC-147 错误恢复与工作区 | 本仓 |
 | `DASH-TC-162/` | DASH-AC-71 / DASH-TC-162 页面渲染、动作与停用 | 本仓 |
 | `DASH-TC-163/` | DASH-AC-71 / DASH-TC-163 页面不得成为 iframe 入口 | 本仓 |
+| `KOSD-TC-175/` | KOSD-AC-71 / KOSD-TC-175 postMessage 的实例校验 | 本仓 |
 
 `DASH-TC-162` 与 `DASH-TC-163` 的 Go 部分覆盖后端半边：页面声明与注册表、服务端投影逐项的当前值/来源/修改入口/只读原因、动作的 202 已接受与对象引用、幂等重放、进度与终态取自对象状态与条件、随组件启停的入口消失与直接调用被拒、无权限账号的同型拒绝，以及页面与 `App` 的导航与 iframe 边界。浏览器侧渲染由前端半边补齐。
 
-`DASH-TC-59` 与 `DASH-TC-60` 随桌面条目类从 `tsic404/kosd` 迁入；kosd 仓不再保留这两个目录。
+`DASH-TC-59`、`DASH-TC-60` 与 `DASH-TC-61` 随桌面条目类与窗口管理器从 `tsic404/kosd` 迁入；kosd 仓不再保留这些目录。窗口状态机、实例、工作区与会话几何的 Go 用例经 `tests/acceptance/front` 驱动 BFF 的窗口会话路由；用例共用 kosd 的装配包启动一次性 API server（envtest）。
 
 同一目录下的 `shell.test.js` 是用例的浏览器侧部分：它加载外壳模块，用假浏览器与假控制面回答驱动 dock、launcher、iframe 挂载与 `ready` 握手。`go test ./tests/...` 跑 Go 部分，`make js-test` 跑浏览器部分。
+
+`KOSD-TC-175/` 是例外：Go 部分起真实的前端进程（控制面来自 `harness`，应用资产与帧地址由 `front.StartWithAssets` 签发），再用 `node --test` 在同一用例里加载外壳模块、把前端地址与会话注入浏览器侧。两侧驱动同一个前端，断言读的是它自己的窗口会话与实例状态，没有桩应答；判定窗口的时钟由用例通过前端的时间推进端点移动，不靠真实等待。
 
 ## 执行
 
