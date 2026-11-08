@@ -25,6 +25,9 @@ const ROLE_RANK = { Guest: 1, Member: 2, Owner: 3 };
 const VISIBILITY_LABELS = { everyone: "所有人", owner: "仅所有者" };
 const EMPTY = "暂无数据";
 const MAX_VALUE_COLUMNS = 6;
+// NESTED_DEPTH bounds how deep a cell expands nested records; beyond it the
+// value is shown as its JSON form rather than an unreadable chain of lists.
+const NESTED_DEPTH = 3;
 
 // sourceLabel names one of the seven source types (KOSD-C-53).
 export function sourceLabel(source) {
@@ -41,22 +44,34 @@ export function roleAllows(sessionRole, requiredRole) {
 }
 
 // access is what one page render knows about the caller: the actions the page
-// declared and the session's role.
-function accessOf(page, session) {
+// declared, the session's role, whether the page is read-only and the action
+// being submitted right now.
+function accessOf(page, session, pending = "") {
   return {
     actions: Array.isArray(page.actions) ? page.actions : [],
     role: session && session.role ? session.role : "",
+    readOnly: Boolean(page && page.readOnly),
+    pending: pending || "",
+    busy: Boolean(pending),
   };
 }
 
 // permits reports whether the page declares the action and the role may submit
-// it. An action the payload does not declare is never offered.
+// it. An action the payload does not declare, and every action of a read-only
+// page, is never offered (DASH-C-22, KOSD-C-53).
 function permits(access, actionId) {
   if (!actionId) return false;
+  if (access && access.readOnly) return false;
   const actions = access && Array.isArray(access.actions) ? access.actions : [];
   const action = actions.find((candidate) => candidate.id === actionId);
   if (!action) return false;
   return roleAllows(access.role, action.requiredRole);
+}
+
+// actionOf resolves one declared action by identity.
+function actionOf(access, actionId) {
+  const actions = access && Array.isArray(access.actions) ? access.actions : [];
+  return actions.find((candidate) => candidate.id === actionId) || null;
 }
 
 function locationLabel(location) {
@@ -110,12 +125,16 @@ export function renderShell(state) {
   const { session, registry, pageId, page, error } = state;
   const pages = pagesOf(registry);
   const isListed = pages.some((entry) => entry.id === pageId);
+  // A submission belongs to the page it was started on; another page never
+  // inherits its busy state.
+  const pendingAction = state.pending && state.pending.pageId === pageId ? state.pending.actionId : "";
   let body = "";
-  if (page) body = renderPage(page, session);
+  if (page) body = renderPage(page, session, pendingAction);
   else if (!error) body = isListed ? `<p class="loading" data-state="loading">正在读取页面…</p>` : renderNoPages();
   // A refusal keeps the page it refused to update, so the shell never drops
   // what the browser already shows because one write failed.
-  const content = (error ? renderFailure(error) : "") + body;
+  const content =
+    (state.answer ? renderActionAnswer(state.answer) : "") + (error ? renderFailure(error) : "") + body;
   // The surfaces are absent only when the caller renders a page alone; the app
   // always initialises the dock, using null to say the read failed.
   const surfaces = state.dock === undefined
@@ -187,14 +206,24 @@ function renderNoPages() {
 // renderPage renders one page: its declared items with their sources, its
 // read-only notice and the banner the shell shows above it. Only actions the
 // session role may submit get an entry (KOSD-C-59).
-export function renderPage(page, session) {
-  const access = accessOf(page, session);
+export function renderPage(page, session, pending = "") {
+  const access = accessOf(page, session, pending);
   const items = (page.items || []).map((item) => renderItem(item, access)).join("");
+  const sources = Array.isArray(page.sources) ? page.sources : [];
+  const declared = [
+    page.requiredRole
+      ? `<span class="required-role" data-required-role="${escapeHtml(page.requiredRole)}">所需权限：${escapeHtml(roleLabel(page.requiredRole))}</span>`
+      : "",
+    sources.length > 0
+      ? `<span class="sources" data-sources="${escapeHtml(sources.join(","))}">来源：${escapeHtml(sources.map(sourceLabel).join("、"))}</span>`
+      : "",
+  ].join("");
   return `
 <article class="page" data-page="${escapeHtml(page.id)}" data-stale="${Boolean(page.stale)}">
   <header class="page-header">
     <h1>${escapeHtml(page.title)}</h1>
     <span class="location">${escapeHtml(locationLabel(page.location))}</span>
+    ${declared}
     ${page.stale ? renderStaleMark() : ""}
   </header>
   ${renderBanner(page.banner)}
@@ -212,8 +241,8 @@ function renderStaleMark() {
   return `<span class="stale" data-stale="true">数据已陈旧</span>`;
 }
 
-// renderItem renders one display item: its label, its source type and the
-// value its source answered (KOSD-C-53).
+// renderItem renders one display item: its label, its source type, the value
+// its source answered and the modification entry it declares (KOSD-C-53).
 export function renderItem(item, access = { actions: [], role: "" }) {
   const observed = item.observedAt
     ? `<span class="observed">观测于 ${escapeHtml(formatTime(item.observedAt))}</span>`
@@ -227,8 +256,110 @@ export function renderItem(item, access = { actions: [], role: "" }) {
     ${item.stale ? renderStaleMark() : ""}
   </header>
   <div class="value">${renderItemValue(item, access)}</div>
+  ${renderItemAction(item, access)}
   ${item.reason ? `<p class="reason">${escapeHtml(item.reason)}</p>` : ""}
 </section>`;
+}
+
+// ITEM_ACTIONS_OWNED names the items whose renderer already offers the item's
+// modification entry; the generic control is not repeated for them.
+const ITEM_ACTIONS_OWNED = new Set(["entries", "notifications"]);
+
+// METHOD_LABELS name a generic modification entry by the write it submits.
+const METHOD_LABELS = { POST: "新建", DELETE: "删除" };
+const DEFAULT_ACTION_LABEL = "修改";
+// REASON_UNRESOLVED states why an entry whose reference the projection cannot
+// complete keeps its control disabled instead of sending a half-built request.
+const REASON_UNRESOLVED = "缺少完整的对象引用，无法提交";
+// REASON_NO_RECORDS states why an object-scoped entry lists no control: the
+// page shows no object to act on yet.
+const REASON_NO_RECORDS = "当前没有可修改的对象";
+// REASON_NO_NAME states why an object-scoped entry lists no control although
+// the page does show objects: none of them carries the name a write needs.
+const REASON_NO_NAME = "对象缺少名称，无法定位";
+
+// renderItemAction renders the modification entry of one item that no dedicated
+// renderer covers (DASH-C-22, KOSD-C-53). A create writes the collection, so its
+// control exists even when the item lists nothing; an entry naming an object is
+// offered once per record. A reference the projection cannot complete keeps its
+// control disabled and states why, so an entry never vanishes silently.
+function renderItemAction(item, access) {
+  if (ITEM_ACTIONS_OWNED.has(item.id)) return "";
+  if (!permits(access, item.action)) return "";
+  const action = actionOf(access, item.action) || {};
+  const entry = action.entry || item.entry || null;
+  if (!entry || !entry.path) return "";
+  const path = String(entry.path);
+  const label = METHOD_LABELS[String(entry.method).toUpperCase()] || DEFAULT_ACTION_LABEL;
+  const { targets, reason } = writeTargets(item, path);
+  const note = reason
+    ? `<p class="reason" data-action-reason="${escapeHtml(item.id)}">${escapeHtml(reason)}</p>`
+    : "";
+  if (targets.length === 0) return note;
+  const buttons = targets
+    .map((target) =>
+      renderActionButton(item.action, target.name ? `${label} ${target.name}` : label, access, target),
+    )
+    .join("");
+  return `<p class="item-actions" data-item-actions="${escapeHtml(item.id)}">${buttons}</p>${note}`;
+}
+
+// writeTargets names the writes one item entry offers. A path without {name}
+// creates the collection, so it is always offered once and carries no
+// reference of its own; a path naming an object is offered once per record and
+// takes the namespace from that record. The projection carries no page- or
+// item-level namespace, so none is invented here. A target whose reference the
+// projection cannot complete is kept with blocked set, never dropped and never
+// used to build a request.
+function writeTargets(item, path) {
+  const records = recordsOf(item.value);
+  if (!path.includes("{name}")) {
+    const blocked = isUnresolved(path);
+    return { targets: [{ name: "", namespace: "", blocked }], reason: blocked ? REASON_UNRESOLVED : "" };
+  }
+  const targets = records
+    .filter((record) => typeof record.name === "string" && record.name !== "")
+    .map((record) => {
+      const namespace = typeof record.namespace === "string" ? record.namespace : "";
+      return { name: record.name, namespace, blocked: isUnresolved(path, { name: record.name, namespace }) };
+    });
+  if (targets.length === 0) {
+    return { targets: [], reason: records.length === 0 ? REASON_NO_RECORDS : REASON_NO_NAME };
+  }
+  const blocked = targets.filter((target) => target.blocked);
+  return { targets, reason: blocked.length > 0 ? REASON_UNRESOLVED : "" };
+}
+
+// recordsOf reads the records one item value carries.
+function recordsOf(value) {
+  if (Array.isArray(value)) return value.filter((record) => record && typeof record === "object");
+  if (value && typeof value === "object") return [value];
+  return [];
+}
+
+// isUnresolved reports whether a path names a placeholder the target cannot
+// fill. An empty value does not fill a placeholder: a path that keeps
+// namespace= would otherwise read as complete.
+function isUnresolved(path, { name = "", namespace = "" } = {}) {
+  if (path.includes("{name}") && name === "") return true;
+  if (path.includes("{namespace}") && namespace === "") return true;
+  return path.replaceAll("{name}", name).replaceAll("{namespace}", namespace).includes("{");
+}
+
+// renderActionButton renders one action control. The action being submitted
+// is disabled and says so, so one write is not sent twice (KOSD-C-13); a control
+// whose reference the projection cannot complete is disabled with that reason.
+function renderActionButton(actionId, label, access, target = {}) {
+  const pending = Boolean(access && access.pending === actionId);
+  const busy = Boolean(access && access.busy);
+  const blocked = Boolean(target.blocked);
+  const attributes = [
+    target.name ? ` data-name="${escapeHtml(target.name)}"` : "",
+    target.namespace ? ` data-namespace="${escapeHtml(target.namespace)}"` : "",
+  ].join("");
+  const state = blocked ? ' disabled data-blocked="true"' : busy ? ` disabled${pending ? ' data-pending="true"' : ""}` : "";
+  const text = pending ? "正在提交…" : label;
+  return `<button type="button" data-action-id="${escapeHtml(actionId)}"${attributes}${state}>${escapeHtml(text)}</button>`;
 }
 
 function renderItemValue(item, access) {
@@ -259,7 +390,7 @@ function renderEntries(item, access) {
         ? `<span class="available" data-available="true">可用</span>`
         : `<span class="unavailable" data-available="false">不可用：${escapeHtml(entry.reason || "原因未知")}</span>`;
       const action = canRemove
-        ? `<button type="button" data-action-id="${escapeHtml(item.action)}" data-name="${escapeHtml(entry.name)}" data-namespace="${escapeHtml(entry.namespace || "")}">移除</button>`
+        ? renderActionButton(item.action, "移除", access, { name: entry.name, namespace: entry.namespace || "" })
         : "";
       return `<tr data-entry="${escapeHtml(entry.name)}">
         <td class="display-name">${escapeHtml(entry.displayName || entry.name)}</td>
@@ -320,7 +451,7 @@ function renderNotifications(item, access) {
   const summary = hasReadState ? renderNotificationSummary(centre) : "";
   const markRead =
     hasReadState && unread > 0 && permits(access, item.action)
-      ? `<p class="item-actions"><button type="button" data-action-id="${escapeHtml(item.action)}">标为已读</button></p>`
+      ? `<p class="item-actions">${renderActionButton(item.action, "标为已读", access)}</p>`
       : "";
   if (events.length === 0) return `${summary}${markRead}<p class="empty" data-empty="notifications">${EMPTY}</p>`;
   const rows = events
@@ -377,11 +508,48 @@ function renderTable(rows) {
   const columns = Object.keys(rows[0]).slice(0, MAX_VALUE_COLUMNS);
   const head = columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("");
   const body = rows
-    .map(
-      (row) => `<tr>${columns.map((column) => `<td>${escapeHtml(formatValue(row[column]))}</td>`).join("")}</tr>`,
-    )
+    .map((row) => `<tr>${columns.map((column) => `<td>${renderCell(row[column])}</td>`).join("")}</tr>`)
     .join("");
   return `<table class="values"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+}
+
+// renderCell renders one table cell. A nested record keeps its field names and
+// values instead of collapsing into one opaque JSON blob, so an object's status
+// and conditions read as their declared fields.
+function renderCell(value, depth = 0) {
+  if (value === null || value === undefined) return "";
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "";
+    return `<ul class="values">${value.map((entry) => `<li>${renderCell(entry, depth + 1)}</li>`).join("")}</ul>`;
+  }
+  if (typeof value === "object") {
+    if (depth >= NESTED_DEPTH) return escapeHtml(JSON.stringify(value));
+    const rows = Object.entries(value)
+      .map(([key, entry]) => `<dt>${escapeHtml(key)}</dt><dd>${renderCell(entry, depth + 1)}</dd>`)
+      .join("");
+    return `<dl class="record">${rows}</dl>`;
+  }
+  return escapeHtml(formatValue(value));
+}
+
+// refLabel renders one object reference the control plane answered.
+function refLabel(reference) {
+  if (!reference || typeof reference !== "object") return "";
+  return [reference.group, reference.kind, reference.namespace, reference.name].filter(Boolean).join("/");
+}
+
+// renderActionAnswer states that a write was accepted and names the object it
+// references (KOSD-C-13). It never claims completion: progress and the terminal
+// state are read from that object's status and conditions (KOSD-C-12).
+export function renderActionAnswer(answer) {
+  if (!answer) return "";
+  const ref = refLabel(answer.ref);
+  const repeated = answer.idempotent ? "（重复提交，结果不变）" : "";
+  return `<section class="accepted" data-accepted="true" data-idempotent="${Boolean(answer.idempotent)}">
+    <p class="accepted-title">已接受${escapeHtml(repeated)}</p>
+    ${ref ? `<p class="accepted-ref">对象：${escapeHtml(ref)}</p>` : ""}
+    <p class="hint">进度与终态取自该对象的状态与条件。</p>
+  </section>`;
 }
 
 function formatValue(value) {
