@@ -47,7 +47,7 @@ js-check:
 	@for file in $$(git ls-files '*.js'); do $(JS) --check "$$file" || exit 1; done
 
 js-test:
-	$(JS) --test tests/shell/*.test.js
+	$(JS) --test tests/shell/*.test.js tests/acceptance/*/*.test.js
 
 lint: fmt-check vet js-check
 

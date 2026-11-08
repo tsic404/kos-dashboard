@@ -2,6 +2,9 @@
 // data the control-plane API answered and returns the HTML the browser shows,
 // so the rendered page can be judged without a DOM.
 
+import { escapeHtml } from "./html.js";
+import { renderDock } from "./dock.js";
+import { renderLauncher } from "./launcher.js";
 import { pagesOf } from "./registry.js";
 
 const SOURCE_LABELS = {
@@ -22,24 +25,6 @@ const ROLE_RANK = { Guest: 1, Member: 2, Owner: 3 };
 const VISIBILITY_LABELS = { everyone: "所有人", owner: "仅所有者" };
 const EMPTY = "暂无数据";
 const MAX_VALUE_COLUMNS = 6;
-
-// escapeHtml keeps every answered value out of the document's markup.
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"']/g, (character) => {
-    switch (character) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
-}
 
 // sourceLabel names one of the seven source types (KOSD-C-53).
 export function sourceLabel(source) {
@@ -119,8 +104,10 @@ export function renderLogin({ error } = {}) {
 }
 
 // renderShell is the whole document: the top bar, the page registry as
-// navigation, and the current page.
-export function renderShell({ session, registry, pageId, page, error }) {
+// navigation, the current page, and the desktop surfaces the shell owns — the
+// dock and the launcher (DASH-C-30).
+export function renderShell(state) {
+  const { session, registry, pageId, page, error } = state;
   const pages = pagesOf(registry);
   const isListed = pages.some((entry) => entry.id === pageId);
   let body = "";
@@ -129,6 +116,20 @@ export function renderShell({ session, registry, pageId, page, error }) {
   // A refusal keeps the page it refused to update, so the shell never drops
   // what the browser already shows because one write failed.
   const content = (error ? renderFailure(error) : "") + body;
+  // The surfaces are absent only when the caller renders a page alone; the app
+  // always initialises the dock, using null to say the read failed.
+  const surfaces = state.dock === undefined
+    ? ""
+    : `${renderDock({ dock: state.dock, apps: state.apps, windows: state.windows, menu: state.dockMenu })}
+  ${renderLauncher({
+    launcher: state.launcher,
+    apps: state.apps,
+    windows: state.windows,
+    recent: state.recent,
+    query: state.launcherQuery,
+    open: state.launcherOpen,
+    refusals: state.refusals,
+  })}`;
   return `
 <div class="shell" data-route="${escapeHtml(pageId || "")}">
   <header class="topbar">
@@ -140,7 +141,17 @@ export function renderShell({ session, registry, pageId, page, error }) {
     ${renderNavigation(pages, pageId)}
     <main class="page-area">${content}</main>
   </div>
+  ${surfaces}
+  ${state.surfaceError ? renderSurfaceError(state.surfaceError) : ""}
 </div>`;
+}
+
+// renderSurfaceError says why the dock or launcher could not read the account
+// state, without replacing the page the shell already shows.
+function renderSurfaceError(failure) {
+  const code = failure && failure.code ? failure.code : "internal";
+  const message = failure && failure.message ? failure.message : "桌面状态读取失败";
+  return `<p class="surface-error" data-surface-error="${escapeHtml(code)}">${escapeHtml(message)}</p>`;
 }
 
 // renderNavigation renders one entry per page the registry lists, grouped by
