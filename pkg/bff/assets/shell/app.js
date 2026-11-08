@@ -51,6 +51,8 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
     launcherQuery: "",
     dockMenu: null,
     surfaceError: null,
+    pending: null,
+    answer: null,
   };
   let closeStream = null;
   let isReadingSurfaces = false;
@@ -139,23 +141,37 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
     state.pageId = pageId;
     state.error = null;
     state.page = null;
+    state.answer = null;
     if (!findPage(state.registry, pageId)) {
-      state.error = new Failure(404, {
-        error: { code: "page_not_found", message: "页面不存在或所属组件已停用", stage: "read" },
-      });
+      state.error = pageNotFound();
       render();
       return;
     }
     render();
     try {
-      const page = await api.get(sourceOf(pageId));
-      state.page = withLocalSources(page);
+      state.page = await readPage(pageId);
     } catch (failure) {
       state.page = null;
       state.error = failure;
       if (failure.status === 401) forgetSession();
     }
     render();
+  }
+
+  // readPage reads one page projection. The control plane serves it already
+  // trimmed to the session role and refuses a page the role may not see with
+  // the same answer an absent page gives (DASH-C-22, KOSD-C-59).
+  async function readPage(pageId) {
+    const page = await api.get(sourceOf(pageId));
+    return withLocalSources(page);
+  }
+
+  // pageNotFound is the one answer for a page that is absent or withdrawn with
+  // its component.
+  function pageNotFound() {
+    return new Failure(404, {
+      error: { code: "page_not_found", message: "页面不存在或所属组件已停用", stage: "read" },
+    });
   }
 
   // forgetSession drops everything the ended session owned — the stream, the
@@ -180,6 +196,8 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
     state.launcherQuery = "";
     state.dockMenu = null;
     state.surfaceError = null;
+    state.pending = null;
+    state.answer = null;
   }
 
   // loadSurfaces reads the installed applications, both layouts and the
@@ -235,9 +253,11 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
     state.surfaceError = state.surfaceError || failure;
   }
 
-  // refreshSurfaces re-reads the surfaces after the event stream reports a
-  // change, so an uninstalled application leaves the dock and the launcher and
-  // its open window enters the error state (DASH-C-30).
+  // refreshSurfaces re-reads the surfaces and the page the shell shows after
+  // the event stream reports a change: an uninstalled application leaves the
+  // dock and the launcher and its open window enters the error state
+  // (DASH-C-30), and a page action's progress is read from the object state and
+  // conditions its page read answers (KOSD-C-12).
   async function refreshSurfaces() {
     if (!state.session) return;
     await loadSurfaces();
@@ -245,8 +265,11 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
       render();
       return;
     }
-    if (state.pageId === DESKTOP_PAGE_ID) await refresh(DESKTOP_PAGE_ID);
-    else render();
+    if (!state.pageId) {
+      render();
+      return;
+    }
+    await refresh(state.pageId);
   }
 
   // withLocalSources fills every local item from browser storage; a local item
@@ -423,10 +446,20 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
   }
 
   // submitAction submits one action the page declares. The entry, not the
-  // shell, decides the write (DASH-C-22).
+  // shell, decides the write (DASH-C-22); the answer is the acceptance and the
+  // object it references, and the page is re-read so progress and the terminal
+  // state come from that object's status and conditions (KOSD-C-12).
   async function submitAction(actionId, target = {}) {
     const page = state.page;
     if (!page) return;
+    if (state.pending && state.pending.pageId === page.id) return;
+    if (page.readOnly) {
+      state.error = new Failure(400, {
+        error: { code: "action_unavailable", message: "只读页面不提供写操作", stage: "validate" },
+      });
+      render();
+      return;
+    }
     const action = (page.actions || []).find((candidate) => candidate.id === actionId);
     if (!action || !action.entry) {
       state.error = new Failure(400, {
@@ -443,16 +476,36 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
       render();
       return;
     }
+    state.error = null;
+    state.answer = null;
+    // The ticket names the page it belongs to: a navigation during the write
+    // neither inherits the busy state nor loses the answer it produced.
+    const ticket = { pageId: page.id, actionId };
+    state.pending = ticket;
+    render();
+    let answer = null;
     try {
       // The entry's body travels verbatim: the page declares the write,
       // including the watermark a mark-read carries (DASH-C-22, DASH-C-27).
-      await api.write(action.entry.method, path, action.entry.body);
+      answer = await api.write(action.entry.method, path, action.entry.body);
     } catch (failure) {
-      state.error = failure;
+      if (state.pending === ticket) state.pending = null;
+      // A refusal belongs to the page that submitted it: a navigation during
+      // the write must not show the old page's failure above the new one.
+      if (failure && failure.status === 401) forgetSession();
+      else if (state.pageId === page.id) state.error = failure;
       render();
       return;
     }
-    await navigate(page.id);
+    if (state.pending === ticket) state.pending = null;
+    if (state.pageId !== page.id) {
+      render();
+      return;
+    }
+    if (answer && answer.accepted) {
+      state.answer = { actionId, idempotent: Boolean(answer.idempotent), ref: answer.ref || null };
+    }
+    await refresh(page.id);
   }
 
   // retry repeats the step that failed: the session, the surfaces or the page.
@@ -576,18 +629,23 @@ export function createApp({ api, root, storage, EventSource, host = null, locati
     });
   }
 
-  // refresh re-reads a page the shell already shows, without clearing it.
+  // refresh re-reads a page the shell already shows, without clearing it; a
+  // page whose read is refused reports the refusal and drops the projection it
+  // can no longer show.
   async function refresh(pageId) {
     if (!state.session || state.pageId !== pageId) return;
     try {
-      const page = await api.get(sourceOf(pageId));
-      if (state.pageId === pageId) {
-        state.page = withLocalSources(page);
-        state.error = null;
-      }
+      const page = await readPage(pageId);
+      if (state.pageId !== pageId) return;
+      state.page = page;
+      state.error = null;
     } catch (failure) {
-      state.error = failure;
-      if (failure.status === 401) forgetSession();
+      if (failure && failure.status === 401) {
+        forgetSession();
+      } else {
+        state.error = failure;
+        if (failure && failure.code === "page_not_found") state.page = null;
+      }
     }
     render();
   }
@@ -643,8 +701,10 @@ export function deepLinkPathOf(location) {
 // fillPath fills the object reference an action declares. A path that still
 // names a placeholder is refused rather than sent half-built.
 export function fillPath(path, { name = "", namespace = "" } = {}) {
-  const filled = String(path).replaceAll("{name}", name).replaceAll("{namespace}", namespace);
-  if (filled.includes("{")) {
+  const template = String(path);
+  const empty = (template.includes("{name}") && name === "") || (template.includes("{namespace}") && namespace === "");
+  const filled = template.replaceAll("{name}", name).replaceAll("{namespace}", namespace);
+  if (empty || filled.includes("{")) {
     throw new Failure(400, {
       error: { code: "action_unresolved", message: "动作缺少对象引用，无法提交", stage: "validate" },
     });

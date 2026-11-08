@@ -179,6 +179,34 @@ test("值里的标记被转义", () => {
   assert.ok(html.includes("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;"));
 });
 
+test("对象存在但没有名称时说明无法定位", () => {
+  const entry = { method: "PUT", path: "/api/v1/resources/Report/{name}?namespace=default" };
+  const html = renderItem(
+    {
+      id: "records",
+      label: "报表",
+      source: "object",
+      action: "mark-viewed",
+      entry,
+      value: [{ title: "无名字" }],
+    },
+    { actions: [{ id: "mark-viewed", entry }], role: "Owner" },
+  );
+  assert.match(html, /data-action-reason="records"/);
+  assert.ok(html.includes("对象缺少名称，无法定位"), "记录没有名称时仍报没有对象");
+  assert.ok(!html.includes('data-action-id="mark-viewed"'), "缺名称的记录仍给出了修改入口");
+});
+
+test("没有记录时说明没有可修改的对象", () => {
+  const entry = { method: "PUT", path: "/api/v1/resources/Report/{name}?namespace=default" };
+  const html = renderItem(
+    { id: "records", label: "报表", source: "object", action: "mark-viewed", entry, value: [] },
+    { actions: [{ id: "mark-viewed", entry }], role: "Owner" },
+  );
+  assert.ok(html.includes("当前没有可修改的对象"), "空列表没有说明没有对象");
+  assert.ok(!html.includes('data-action-id="mark-viewed"'), "空列表给出了修改入口");
+});
+
 test("七类来源各有名称", () => {
   for (const [source, label] of [
     ["object", "对象源"],
@@ -199,4 +227,13 @@ test("通用值按形状渲染", () => {
   assert.match(renderValue(["a", "b"]), /<li>a<\/li><li>b<\/li>/);
   assert.match(renderValue(null), /暂无数据/);
   assert.match(renderValue("就绪"), /<p class="scalar">就绪<\/p>/);
+});
+
+test("页面按声明渲染标题、位置、所需权限与来源类型", () => {
+  const html = renderPage({ ...desktopPage, requiredRole: "Member" }, { role: "Owner" });
+  assert.match(html, /data-required-role="Member"/);
+  assert.ok(html.includes("所需权限：成员"));
+  assert.match(html, /data-sources="object,local"/);
+  assert.ok(html.includes("来源：对象源、本地源"));
+  assert.match(html, /<span class="location">桌面<\/span>/);
 });

@@ -175,6 +175,12 @@ button:hover {
   font-size: 0.8rem;
 }
 
+.page-header .required-role,
+.page-header .sources {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .banner {
   margin-bottom: 1rem;
   padding: 0.6rem 0.8rem;
@@ -372,6 +378,34 @@ li[data-read="false"] .read-state {
   margin: 0 0 0.5rem;
   color: var(--muted);
   font-size: 0.75rem;
+}
+
+/* Acceptance of a page action */
+
+.accepted {
+  margin-bottom: 1rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--muted);
+  border-radius: 0.4rem;
+  background: var(--surface);
+}
+
+.accepted-title {
+  margin: 0 0 0.35rem;
+  font-weight: 600;
+}
+
+.accepted-ref,
+.accepted .hint {
+  margin: 0 0 0.35rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+button[disabled] {
+  cursor: progress;
+  opacity: 0.7;
 }
 
 @media (max-width: 48rem) {
