@@ -10,7 +10,6 @@ import test from "node:test";
 
 import { createApi } from "../../../pkg/bff/assets/shell/api.js";
 import { createApp } from "../../../pkg/bff/assets/shell/app.js";
-import { createAppHost } from "../../../pkg/bff/assets/shell/apphost.js";
 import { dockView, launcherView } from "../../shell/fixtures.js";
 import {
   elementWith,
@@ -102,7 +101,7 @@ function routesFor(overrides = {}) {
     "GET /api/v1/apps": () => reply(200, { items: [], notReady: [] }),
     "GET /api/v1/dock": () => reply(200, dockView),
     "GET /api/v1/launcher": () => reply(200, launcherView),
-    "GET /api/v1/windows": () => reply(200, { items: [] }),
+    "GET /api/v1/desktop/windows": () => reply(200, { windows: [], workspaces: ["main"], currentWorkspace: "main", taskbar: [], address: "", appInstances: {} }),
     "PUT /api/v1/preferences/reports-ext/view": () => reply(202, { accepted: true, ref: { kind: "Preference" } }),
     ...overrides,
   };
@@ -113,10 +112,18 @@ function startShell(routes) {
   const api = createApi({ fetch, document: { cookie: "kos_bff_csrf=csrf-token" } });
   const root = { innerHTML: "" };
   const container = fakeElement("div");
-  const host = createAppHost({ api, document: fakeDocument(), container, window: fakeWindow() });
   const { EventSource, sources } = fakeEventSource();
   const storage = memoryStorage({ "reports.view": JSON.stringify([{ name: "本月" }]) });
-  const app = createApp({ api, root, storage, EventSource, host });
+  const app = createApp({
+    api,
+    root,
+    storage,
+    EventSource,
+    document: fakeDocument(),
+    container,
+    window: fakeWindow(),
+    location: { pathname: "/", origin: "https://console.example.test" },
+  });
   return { app, root, calls, container, sources };
 }
 

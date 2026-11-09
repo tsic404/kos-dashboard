@@ -5,6 +5,7 @@
 import { escapeHtml } from "./html.js";
 import { renderDock } from "./dock.js";
 import { renderLauncher } from "./launcher.js";
+import { renderTaskbar } from "./windowbar.js";
 import { pagesOf } from "./registry.js";
 
 const SOURCE_LABELS = {
@@ -120,7 +121,7 @@ export function renderLogin({ error } = {}) {
 
 // renderShell is the whole document: the top bar, the page registry as
 // navigation, the current page, and the desktop surfaces the shell owns — the
-// dock and the launcher (DASH-C-30).
+// dock, the launcher and the taskbar (DASH-C-30, DASH-C-74).
 export function renderShell(state) {
   const { session, registry, pageId, page, error } = state;
   const pages = pagesOf(registry);
@@ -149,6 +150,12 @@ export function renderShell(state) {
     open: state.launcherOpen,
     refusals: state.refusals,
   })}`;
+  // The taskbar lists the current workspace's running windows, limited to the
+  // windows this page mounted: a page load restores no open set (DASH-C-74).
+  const mounted = (state.windows || []).map((window) => window.id);
+  const taskbar = state.windowSession
+    ? renderTaskbar(state.windowSession, { mounted, apps: state.apps })
+    : "";
   return `
 <div class="shell" data-route="${escapeHtml(pageId || "")}">
   <header class="topbar">
@@ -161,6 +168,7 @@ export function renderShell(state) {
     <main class="page-area">${content}</main>
   </div>
   ${surfaces}
+  ${taskbar}
   ${state.surfaceError ? renderSurfaceError(state.surfaceError) : ""}
 </div>`;
 }

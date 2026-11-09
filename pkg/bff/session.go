@@ -138,6 +138,9 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if accountErr == nil {
 		s.host.RevokeAccount(account)
 	}
+	// Signing out ends the browser session's window set with its frames
+	// (DASH-C-74).
+	s.windows.drop(s.conversationOf(r))
 	s.clearSession(w)
 	w.WriteHeader(http.StatusNoContent)
 }

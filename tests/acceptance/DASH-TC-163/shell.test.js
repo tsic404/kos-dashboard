@@ -9,8 +9,7 @@ import test from "node:test";
 
 import { createApi } from "../../../pkg/bff/assets/shell/api.js";
 import { createApp } from "../../../pkg/bff/assets/shell/app.js";
-import { createAppHost } from "../../../pkg/bff/assets/shell/apphost.js";
-import { dockView, launcherView, notesApp, openAnswerFor } from "../../shell/fixtures.js";
+import { dockView, launcherView, notesApp, openSessionFor } from "../../shell/fixtures.js";
 import {
   elementWith,
   fakeDocument,
@@ -59,7 +58,7 @@ function routesFor(overrides = {}) {
     "GET /api/v1/dock": () => reply(200, { ...dockView, pinned: [], applications: [notesApp.id] }),
     "GET /api/v1/launcher": () => reply(200, { ...launcherView, applications: [notesApp.id] }),
     "GET /api/v1/windows": () => reply(200, { items: [] }),
-    [`POST /api/v1/apps/${notesApp.id}/windows`]: () => reply(202, openAnswerFor(notesApp, { id: "win-notes" })),
+    "POST /api/v1/desktop/windows": () => reply(202, openSessionFor(notesApp)),
     ...overrides,
   };
 }
@@ -69,9 +68,17 @@ function startShell(routes) {
   const api = createApi({ fetch, document: { cookie: "kos_bff_csrf=csrf-token" } });
   const root = { innerHTML: "" };
   const container = fakeElement("div");
-  const host = createAppHost({ api, document: fakeDocument(), container, window: fakeWindow() });
   const { EventSource } = fakeEventSource();
-  const app = createApp({ api, root, storage: memoryStorage(), EventSource, host });
+  const app = createApp({
+    api,
+    root,
+    storage: memoryStorage(),
+    EventSource,
+    container,
+    document: fakeDocument(),
+    window: fakeWindow(),
+    location: { pathname: "/", origin: "https://console.example.test" },
+  });
   return { app, root, calls, container };
 }
 
@@ -100,7 +107,7 @@ test("页面渲染不创建 iframe，唯一的 iframe 来自 App 窗口", async 
   const windowNode = container.children[0];
   assert.equal(windowNode.tagName, "SECTION");
   assert.equal(windowNode.getAttribute("data-app"), notesApp.id);
-  const frame = windowNode.children[0].children[0];
+  const frame = windowNode.children[1].children[0];
   assert.equal(frame.tagName, "IFRAME", "App 窗口没有挂载 iframe");
 });
 

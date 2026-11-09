@@ -9,8 +9,7 @@ import test from "node:test";
 
 import { createApi } from "../../../pkg/bff/assets/shell/api.js";
 import { createApp } from "../../../pkg/bff/assets/shell/app.js";
-import { createAppHost } from "../../../pkg/bff/assets/shell/apphost.js";
-import { desktopPage, launcherView, notesApp, openAnswerFor, registry } from "../../shell/fixtures.js";
+import { desktopPage, launcherView, notesApp, openSessionFor, registry, sessionOf } from "../../shell/fixtures.js";
 import {
   elementWith,
   fakeDocument,
@@ -47,7 +46,7 @@ function routesFor(overrides = {}) {
     "GET /api/v1/apps": () => reply(200, { items: [], notReady: [brokenRefusal] }),
     "GET /api/v1/dock": () => reply(200, { schemaVersion: 1, position: "bottom", autoHide: false, pinned: [], isStored: false, applications: [] }),
     "GET /api/v1/launcher": () => reply(200, { ...launcherView, applications: [], isStored: false }),
-    "GET /api/v1/windows": () => reply(200, { items: [] }),
+    "GET /api/v1/desktop/windows": () => reply(200, sessionOf([])),
     ...overrides,
   };
 }
@@ -57,9 +56,17 @@ function startShell(routes, location = null) {
   const api = createApi({ fetch, document: { cookie: "kos_bff_csrf=csrf-token" } });
   const root = { innerHTML: "" };
   const container = fakeElement("div");
-  const host = createAppHost({ api, document: fakeDocument(), container, window: fakeWindow() });
   const { EventSource } = fakeEventSource();
-  const app = createApp({ api, root, storage: memoryStorage(), EventSource, host, location });
+  const app = createApp({
+    api,
+    root,
+    storage: memoryStorage(),
+    EventSource,
+    document: fakeDocument(),
+    container,
+    window: fakeWindow(),
+    location,
+  });
   return { app, root, calls, container };
 }
 
@@ -85,7 +92,7 @@ test("深链与启动都不为未安装的应用创建窗口", async () => {
 
   // A deep link the shell cannot resolve to an installed application leaves no
   // window and no registration request (DASH-C-30).
-  const opened = calls.filter((call) => call.method === "POST" && call.path.endsWith("/windows"));
+  const opened = calls.filter((call) => call.method === "POST" && call.path === "/api/v1/desktop/windows");
   assert.deepEqual(opened, []);
   assert.equal(container.children.length, 0);
 
@@ -93,7 +100,7 @@ test("深链与启动都不为未安装的应用创建窗口", async () => {
   assert.equal(container.children.length, 0, "未安装的应用创建了窗口");
   assert.match(root.innerHTML, /data-surface-error="app_unavailable"/);
   assert.ok(
-    !calls.some((call) => call.method === "POST" && call.path === "/api/v1/apps/notes/windows"),
+    !calls.some((call) => call.method === "POST" && call.path === "/api/v1/desktop/windows"),
     "未安装的应用仍发出了窗口注册请求",
   );
 });
@@ -102,7 +109,7 @@ test("深链只在已安装应用声明该路径时打开窗口", async () => {
   const routes = routesFor({
     "GET /api/v1/apps": () => reply(200, { items: [notesApp], notReady: [] }),
     "GET /api/v1/deep-links?path=%2Fnotes": () => reply(200, { app: "notes" }),
-    "POST /api/v1/apps/notes/windows": () => reply(202, openAnswerFor(notesApp, { id: "win-notes" })),
+    "POST /api/v1/desktop/windows": () => reply(202, openSessionFor(notesApp)),
   });
   const { app, container } = startShell(routes, { pathname: "/notes" });
   await app.start();

@@ -435,9 +435,10 @@ button[disabled] {
   transition: transform 160ms ease;
 }
 
+/* The taskbar owns the bottom edge, so the bottom dock sits above it. */
 .dock[data-position="bottom"] {
   inset-inline: 50%;
-  inset-block-end: 0.6rem;
+  inset-block-end: 3.6rem;
   transform: translateX(-50%);
   flex-direction: row;
 }
@@ -457,7 +458,7 @@ button[disabled] {
 }
 
 .dock[data-autohide="true"][data-position="bottom"] {
-  transform: translate(-50%, calc(100% - 0.6rem));
+  transform: translate(-50%, calc(100% + 3rem));
 }
 
 .dock[data-autohide="true"][data-position="bottom"]:hover,
@@ -699,8 +700,8 @@ button[disabled] {
 
 .window {
   position: absolute;
-  inset-block-start: calc(4rem + var(--window-offset, 0px));
-  inset-inline-start: calc(4rem + var(--window-offset, 0px));
+  inset-block-start: var(--window-y, 4rem);
+  inset-inline-start: var(--window-x, 4rem);
   z-index: var(--window-z, 1);
   display: grid;
   grid-template-rows: auto 1fr;
@@ -714,6 +715,22 @@ button[disabled] {
   background: Canvas;
   box-shadow: 0 1rem 3rem rgb(0 0 0 / 30%);
   pointer-events: auto;
+}
+
+/* A minimized window keeps its frame and its page state, and shows nothing
+   (DASH-C-74). */
+.window[data-state="minimized"] {
+  display: none;
+}
+
+.window[data-state="maximized"],
+.window[data-state="fullscreen"] {
+  inset: 0;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
 }
 
 .window[data-focused="true"] {
@@ -734,6 +751,11 @@ button[disabled] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.window-bar button {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8rem;
 }
 
 .window-close {
@@ -765,4 +787,82 @@ button[disabled] {
   max-width: 24rem;
   color: var(--danger);
   text-align: center;
+}
+
+/* Taskbar */
+
+.taskbar {
+  position: fixed;
+  z-index: 40;
+  inset-inline: 50%;
+  inset-block-end: 0.6rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  background: var(--surface);
+  backdrop-filter: blur(8px);
+  transform: translateX(-50%);
+}
+
+.taskbar-workspaces {
+  display: flex;
+  gap: 0.25rem;
+  padding-inline-end: 0.5rem;
+  border-inline-end: 1px solid var(--border);
+}
+
+.taskbar-workspace {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 0.4rem;
+}
+
+.taskbar-workspace[aria-current="true"] {
+  font-weight: 600;
+  background: color-mix(in srgb, CanvasText 10%, transparent);
+}
+
+.taskbar-windows {
+  display: flex;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.taskbar-item {
+  max-width: 12rem;
+  overflow: hidden;
+  padding: 0.25rem 0.6rem;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 0.4rem;
+}
+
+.taskbar-item[data-focused="true"] {
+  font-weight: 600;
+  background: color-mix(in srgb, CanvasText 10%, transparent);
+}
+
+.taskbar-item[data-state="minimized"] {
+  opacity: 0.7;
+}
+
+.window-workspace {
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: Canvas;
+}
+
+.taskbar-workspace-new {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+  border-radius: 0.4rem;
 }
