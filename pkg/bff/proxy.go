@@ -160,7 +160,7 @@ func (s *Server) judgePreferenceWrite(w http.ResponseWriter, r *http.Request) (i
 	if r.Method != http.MethodPut {
 		return r.Body, true
 	}
-	key, matched := productPreferenceKey(r.URL.Path)
+	domain, key, matched := productPreferencePath(r.URL.Path)
 	if !matched {
 		return r.Body, true
 	}
@@ -176,6 +176,19 @@ func (s *Server) judgePreferenceWrite(w http.ResponseWriter, r *http.Request) (i
 		writeFailure(w, http.StatusBadRequest, "invalid_request", "偏好请求体不是合法 JSON", "validate")
 		return nil, false
 	}
+	if key == dock.PreferenceWindowLayout {
+		// The layout judge compares against the account's stored value, so it
+		// reads the domain as the caller's session itself (DASH-C-27).
+		token, ok := s.sessionToken(r)
+		if !ok {
+			writeFailure(w, http.StatusUnauthorized, "unauthenticated", "会话无效或已过期，请重新登录", "authorize")
+			return nil, false
+		}
+		if !s.judgeWindowLayoutWrite(w, r, token, domain, request.Value) {
+			return nil, false
+		}
+		return bytes.NewReader(body), true
+	}
 	if err := validateProductPreference(key, request.Value); err != nil {
 		writeFailure(w, http.StatusBadRequest, "invalid_request", err.Error(), "validate")
 		return nil, false
@@ -183,17 +196,17 @@ func (s *Server) judgePreferenceWrite(w http.ResponseWriter, r *http.Request) (i
 	return bytes.NewReader(body), true
 }
 
-// productPreferenceKey names the key of one write to this product's preference
-// domains. A path outside them matches nothing.
-func productPreferenceKey(path string) (string, bool) {
+// productPreferencePath names the domain and key of one write to this product's
+// preference domains. A path outside them matches nothing.
+func productPreferencePath(path string) (domain, key string, matched bool) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) != 5 || parts[0] != "api" || parts[1] != "v1" || parts[2] != "preferences" {
-		return "", false
+		return "", "", false
 	}
 	if parts[3] != dock.Identifier {
-		return "", false
+		return "", "", false
 	}
-	return parts[4], true
+	return parts[3], parts[4], true
 }
 
 // validateProductPreference judges one value against its key's declaration.

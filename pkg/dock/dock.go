@@ -42,6 +42,12 @@ const (
 	PreferenceNotifications = "notifications"
 	// PreferenceRead is the notification read key in that domain.
 	PreferenceRead = "read"
+	// PreferenceDashboard is the window-layout preference domain C-27 names
+	// `dashboard`; every key of it lands in this extension's domain in the store.
+	PreferenceDashboard = "dashboard"
+	// PreferenceWindowLayout is the window-layout key in that domain: the
+	// account's layout collection, under `dashboard.windowLayout` (C-27).
+	PreferenceWindowLayout = "windowLayout"
 )
 
 // Visibilities an entry may carry (C-30). The empty value reads as Everyone.
@@ -121,6 +127,7 @@ func Declaration() extension.Declaration {
 				{ID: PreferenceDock, Keys: []string{PreferenceLayout}},
 				{ID: PreferenceLauncher, Keys: []string{PreferenceLauncherLayout}},
 				{ID: PreferenceNotifications, Keys: []string{PreferenceRead}},
+				{ID: PreferenceDashboard, Keys: []string{PreferenceWindowLayout}},
 			},
 		},
 		Permissions: []extension.Permission{

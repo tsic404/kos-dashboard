@@ -68,13 +68,15 @@ function renderWorkspaces(session) {
 
 // renderWindowChrome is the content of one window's bar: its title, the
 // transitions DASH-C-74 allows from its state, and the workspace the window is
-// grouped into. A state offers no transition it cannot take.
+// grouped into. A state offers no transition it cannot take. Pinning is a
+// layout attribute, so the bar offers it in every live state (DASH-C-27).
 export function renderWindowChrome(window, app = null, workspaces = []) {
   if (!window || window.state === "error") return "";
   const title = (app && app.name) || window.application;
   const commands = windowCommands(window).join("");
+  const pin = `<button type="button" class="window-pin" data-command="window-pin" data-window="${escapeHtml(window.id)}" aria-pressed="${Boolean(window.isPinned)}">${window.isPinned ? "取消固定" : "固定"}</button>`;
   const close = `<button type="button" class="window-close" data-command="window-close" data-window="${escapeHtml(window.id)}">关闭${window.isUnsaved ? "（未保存）" : ""}</button>`;
-  return `<span class="window-title">${escapeHtml(title)}</span>${renderWindowWorkspace(window, workspaces)}${commands}${close}`;
+  return `<span class="window-title">${escapeHtml(title)}</span>${renderWindowWorkspace(window, workspaces)}${commands}${pin}${close}`;
 }
 
 // renderWindowWorkspace is the control that moves one window into a workspace.

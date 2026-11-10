@@ -23,7 +23,7 @@ ENVTEST_STAMP := $(ENVTEST_ASSETS)/.version
 # the post-unpack check read this same list, so a partial unpack stays unusable.
 ENVTEST_BINARIES := kube-apiserver etcd
 
-.PHONY: all build verify fmt-check vet js-check js-test lint test acceptance envtest-version envtest-assets clean
+.PHONY: all build verify fmt-check vet js-check js-test lint test acceptance acceptance-window-layout envtest-version envtest-assets clean
 
 all: verify test
 
@@ -57,6 +57,11 @@ test: envtest-assets js-test
 
 acceptance: envtest-assets
 	KUBEBUILDER_ASSETS="$(ENVTEST_ASSETS)" $(GO) test ./tests/... -count=1 -v
+
+# acceptance-window-layout runs the four window-layout cases on their own; QA
+# executes this one and reads its exit status, no arguments and no setup.
+acceptance-window-layout: envtest-assets
+	sh qa/acceptance.sh
 
 # envtest-version is the only place the pinned control-plane version is written
 # down: CI reads it for the cache key, so the two cannot drift apart.

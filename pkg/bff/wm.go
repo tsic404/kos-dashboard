@@ -23,6 +23,7 @@ const (
 	desktopWindowBoundsPath    = "/api/v1/desktop/windows/{window}/bounds"
 	desktopWindowWorkspacePath = "/api/v1/desktop/windows/{window}/workspace"
 	desktopWindowUnsavedPath   = "/api/v1/desktop/windows/{window}/unsaved"
+	desktopWindowPinnedPath    = "/api/v1/desktop/windows/{window}/pinned"
 	desktopWindowHeartbeatPath = "/api/v1/desktop/windows/{window}/heartbeat"
 	desktopWindowCrashPath     = "/api/v1/desktop/windows/{window}/crash"
 	desktopWindowRestartPath   = "/api/v1/desktop/windows/{window}/restart"
@@ -349,6 +350,34 @@ func (s *Server) workspaceDesktopWindow(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, s.sessionAnswer(session, window))
 }
 
+// setDesktopWindowPinned pins or unpins one window. Pinning is a layout
+// attribute: the session records it, and the layout preference carries it to
+// the account's other browsers (DASH-C-27).
+func (s *Server) setDesktopWindowPinned(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.csrfOrRefuse(w, r); !ok {
+		return
+	}
+	session, window, ok := s.sessionWindow(w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Pinned *bool `json:"pinned"`
+	}
+	body, err := readBody(r)
+	if err != nil || decodeJSON(body, &request) != nil || request.Pinned == nil {
+		writeFailure(w, http.StatusBadRequest, "invalid_request", "固定请求缺少 pinned 字段", "validate")
+		return
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	if !session.desktop.SetPinned(window, *request.Pinned) {
+		writeFailure(w, http.StatusNotFound, "not_found", wm.ErrWindowUnknown.Error(), "authorize")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.sessionAnswer(session, window))
+}
+
 // unsavedDesktopWindow records the unsaved changes the application announced;
 // while they last, one close may be vetoed (DASH-C-74).
 func (s *Server) unsavedDesktopWindow(w http.ResponseWriter, r *http.Request) {
@@ -578,6 +607,10 @@ func (s *Server) sessionAnswer(session *windowSession, changed string) map[strin
 		"taskbar":          session.desktop.Taskbar(),
 		"address":          session.desktop.Address(),
 		"appInstances":     instances,
+		// layout is the layout-domain projection of this session: the records
+		// the shell persists under dashboard.windowLayout, carrying no open
+		// set, z-order, focus or minimization (DASH-C-27, DASH-C-74).
+		"layout": session.desktop.WindowLayout(),
 	}
 	if changed != "" {
 		if window, found := session.desktop.Window(changed); found {

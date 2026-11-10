@@ -90,12 +90,18 @@ func (s *Server) launcherLayout(w http.ResponseWriter, r *http.Request) {
 // desktopPreferences reads this product's preference domain as the caller's
 // session. A refusal is answered here, so the caller reads one envelope.
 func (s *Server) desktopPreferences(w http.ResponseWriter, r *http.Request) (string, map[string]string, bool) {
+	return s.preferencesFor(w, r, preferenceDomain)
+}
+
+// preferencesFor reads one preference domain as the caller's session. A refusal
+// is answered here, so every caller reads one envelope.
+func (s *Server) preferencesFor(w http.ResponseWriter, r *http.Request, domain string) (string, map[string]string, bool) {
 	token, ok := s.sessionToken(r)
 	if !ok {
 		writeFailure(w, http.StatusUnauthorized, "unauthenticated", "会话无效或已过期，请重新登录", "authorize")
 		return "", nil, false
 	}
-	payload, refused := s.readUpstream(r, token, "/api/v1/preferences/"+preferenceDomain)
+	payload, refused := s.readUpstream(r, token, "/api/v1/preferences/"+domain)
 	if refused != nil {
 		if len(refused.Body) > 0 {
 			// The control plane's own envelope travels unchanged (KOSD-C-12).

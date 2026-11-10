@@ -8,11 +8,14 @@ import { Failure } from "./api.js";
 import { appsOf, findApp, refusalsOf } from "./apps.js";
 import {
   dockLayoutOf,
+  encodeWindowLayout,
   launcherLayoutOf,
   readDock,
   readLauncher,
+  readWindowLayout,
   saveDock,
   saveLauncher,
+  saveWindowLayout,
   withAutoHide,
   withDockPosition,
   withPinned,
@@ -90,6 +93,7 @@ export function createApp({
     launcher: null,
     windows: [],
     windowSession: emptySession(),
+    windowLayout: null,
     recent: [],
     launcherOpen: false,
     launcherQuery: "",
@@ -101,6 +105,22 @@ export function createApp({
   let closeStream = null;
   let isReadingSurfaces = false;
   let watch = null;
+  // persistedLayout is the layout the account last kept, so a session change
+  // that leaves the layout alone writes nothing.
+  let persistedLayout = null;
+  // layoutFailure is the layout write refusal the page now shows, so a later
+  // successful write clears that one and not another surface's failure.
+  let layoutFailure = null;
+  // layoutWrite is the promise of the running layout write, pendingLayout the
+  // newest snapshot waiting behind it, and isWritingLayout its guard: overlapping
+  // session changes must not race, or an older snapshot could land after a newer
+  // one (DASH-C-27).
+  let layoutWrite = null;
+  let pendingLayout = null;
+  let isWritingLayout = false;
+  // sessionEpoch changes whenever the session ends, so a write started for one
+  // session cannot settle the next session's layout state.
+  let sessionEpoch = 0;
   // stoppedWindows names the windows whose frame this page saw stop but whose
   // crash report the front did not take. Their frame is gone either way, so the
   // page keeps showing the error and the way back until the front records it, the
@@ -238,6 +258,12 @@ export function createApp({
     stopWatch();
     if (layer) layer.closeAll();
     stoppedWindows.clear();
+    // The next session's layout is the account's, not the one this page read;
+    // a write the ended session started must not speak for the next one.
+    sessionEpoch += 1;
+    pendingLayout = null;
+    persistedLayout = null;
+    layoutFailure = null;
     state.session = null;
     state.registry = { items: [] };
     state.pageId = "";
@@ -248,6 +274,7 @@ export function createApp({
     state.launcher = null;
     state.windows = [];
     state.windowSession = emptySession();
+    state.windowLayout = null;
     state.launcherOpen = false;
     state.launcherQuery = "";
     state.dockMenu = null;
@@ -263,10 +290,11 @@ export function createApp({
     if (isReadingSurfaces) return;
     isReadingSurfaces = true;
     try {
-      const [appsRead, dockRead, launcherRead, windowsRead] = await Promise.allSettled([
+      const [appsRead, dockRead, launcherRead, layoutRead, windowsRead] = await Promise.allSettled([
         api.get(APPS_PATH),
         readDock(api),
         readLauncher(api),
+        readWindowLayout(api, { viewport: viewport() }),
         windows.load(),
       ]);
       state.surfaceError = null;
@@ -280,6 +308,12 @@ export function createApp({
       else absorbSurfaceFailure(dockRead.reason);
       if (launcherRead.status === "fulfilled") state.launcher = launcherRead.value;
       else absorbSurfaceFailure(launcherRead.reason);
+      if (layoutRead.status === "fulfilled") {
+        adoptWindowLayout(layoutRead.value);
+      } else {
+        state.windowLayout = null;
+        absorbSurfaceFailure(layoutRead.reason);
+      }
       if (windowsRead.status === "fulfilled") {
         // The window set is browser session state (DASH-C-74): the front's
         // answer settles the nodes this page mounted and never opens one by
@@ -290,6 +324,81 @@ export function createApp({
       }
     } finally {
       isReadingSurfaces = false;
+    }
+  }
+
+  // adoptWindowLayout takes the front's adapted read: the layout this browser
+  // sees, already clamped and with a removed display fallen back. An
+  // unsupported stored version answers the default layout with its reason, and
+  // nothing is written back (DASH-C-27).
+  function adoptWindowLayout(view) {
+    state.windowLayout = view || null;
+    if (!view || view.isSupported === false) {
+      state.surfaceError = state.surfaceError || layoutUnsupported(view && view.reason);
+    }
+  }
+
+  // layoutUnsupported names why the stored layout could not be honoured.
+  function layoutUnsupported(reason) {
+    return new Failure(409, {
+      error: {
+        code: "layout_unsupported",
+        message: reason || "存储的布局版本不受当前桌面支持，已使用默认布局",
+        stage: "read",
+      },
+    });
+  }
+
+  // persistLayout stores the session's layout projection as the account's
+  // layout preference (DASH-C-27). The value is the front's projection, never
+  // the adapted read, so a clamped answer is not written back; a projection
+  // equal to the last stored one writes nothing. Writes run one at a time: a
+  // snapshot taken while a write is in flight supersedes the waiting one, so the
+  // last session state is always the last value stored. A refusal is presented
+  // with the control plane's own reason.
+  function persistLayout() {
+    const layout = windows.current().layout;
+    if (!layout || !Number.isInteger(layout.schemaVersion)) return Promise.resolve();
+    pendingLayout = { layout, encoded: encodeWindowLayout(layout) };
+    if (!isWritingLayout) {
+      isWritingLayout = true;
+      layoutWrite = drainLayoutWrites();
+    }
+    return layoutWrite;
+  }
+
+  // drainLayoutWrites writes queued snapshots one at a time until none is left;
+  // a newer snapshot replaces a waiting one, never a running write.
+  async function drainLayoutWrites() {
+    try {
+      while (pendingLayout) {
+        const next = pendingLayout;
+        pendingLayout = null;
+        if (next.encoded === persistedLayout) continue;
+        const epoch = sessionEpoch;
+        try {
+          await saveWindowLayout(api, next.layout);
+          if (epoch !== sessionEpoch) continue;
+          persistedLayout = next.encoded;
+          // Only the layout's own refusal is cleared here: a surface error the
+          // page already shows belongs to another read or write.
+          if (state.surfaceError === layoutFailure) {
+            state.surfaceError = null;
+            layoutFailure = null;
+          }
+        } catch (failure) {
+          if (epoch !== sessionEpoch) continue;
+          if (failure && failure.status === 401) {
+            forgetSession();
+            continue;
+          }
+          layoutFailure = failure;
+          state.surfaceError = failure;
+        }
+      }
+    } finally {
+      isWritingLayout = false;
+      layoutWrite = null;
     }
   }
 
@@ -483,9 +592,11 @@ export function createApp({
       return;
     }
     try {
+      // The surfaces were read; a write this page issues is the only failure
+      // the render that follows may present.
+      state.surfaceError = null;
       await mountApp(app);
       recordRecent(storage, { id: app.id, name: app.name, openedAt: new Date().toISOString() });
-      state.surfaceError = null;
     } catch (failure) {
       if (failure && failure.status === 401) forgetSession();
       else state.surfaceError = failure;
@@ -530,6 +641,7 @@ export function createApp({
     startWatch();
     syncWindows();
     syncAddress();
+    await persistLayout();
     return answer;
   }
 
@@ -548,6 +660,7 @@ export function createApp({
         syncAddress();
       }
       syncWindows();
+      await persistLayout();
     } catch (failure) {
       if (failure && failure.status === 401) forgetSession();
       else state.surfaceError = failure;
@@ -574,6 +687,7 @@ export function createApp({
       syncWindows();
       syncAddress();
       state.surfaceError = vetoed ? closeVetoed() : null;
+      await persistLayout();
     } catch (failure) {
       if (failure && failure.status === 401) forgetSession();
       else state.surfaceError = failure;
@@ -610,6 +724,25 @@ export function createApp({
     render();
   }
 
+  // togglePin pins or unpins one window. Pinning is a layout attribute, so it
+  // goes through the window session and the layout preference carries it to the
+  // account's other browsers (DASH-C-27). A pinned window stays where it is.
+  async function togglePin(windowId) {
+    if (!layer || !windowId) return;
+    const window = windowById(windows.current(), windowId);
+    if (!window) return;
+    try {
+      await windows.setPinned(windowId, !window.isPinned);
+      syncWindows();
+      state.surfaceError = null;
+      await persistLayout();
+    } catch (failure) {
+      if (failure && failure.status === 401) forgetSession();
+      else state.surfaceError = failure;
+    }
+    render();
+  }
+
   // transition applies one state change DASH-C-74 allows. Snapping fills half of
   // the viewport the browser reports.
   async function transition(windowId, command, edge = "") {
@@ -623,6 +756,7 @@ export function createApp({
       syncWindows();
       syncAddress();
       state.surfaceError = null;
+      await persistLayout();
     } catch (failure) {
       if (failure && failure.status === 401) forgetSession();
       else state.surfaceError = failure;
@@ -656,6 +790,7 @@ export function createApp({
       syncWindows();
       syncAddress();
       state.surfaceError = null;
+      await persistLayout();
     } catch (failure) {
       if (failure && failure.status === 401) forgetSession();
       else state.surfaceError = failure;
@@ -726,6 +861,7 @@ export function createApp({
       syncWindows();
       syncAddress();
       state.surfaceError = null;
+      await persistLayout();
     } catch (failure) {
       if (failure && failure.status === 401) forgetSession();
       else state.surfaceError = failure;
@@ -994,6 +1130,8 @@ export function createApp({
         return transition(element.getAttribute("data-window"), name, element.getAttribute("data-edge"));
       case "window-focus":
         return focusWindow(element.getAttribute("data-window"));
+      case "window-pin":
+        return togglePin(element.getAttribute("data-window"));
       case "window-restart":
         return restartWindow(element.getAttribute("data-window"));
       case "workspace":
