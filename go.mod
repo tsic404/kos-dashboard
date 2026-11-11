@@ -3,7 +3,7 @@ module github.com/tsic404/kos-dashboard
 go 1.26.0
 
 require (
-	github.com/tsic404/kosd v0.0.0-20261103220708-c99697f826bf
+	github.com/tsic404/kosd v0.0.0-20261111055548-4c6df9359fd5
 	k8s.io/apimachinery v0.37.1
 	k8s.io/client-go v0.37.1
 )

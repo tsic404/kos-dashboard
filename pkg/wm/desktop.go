@@ -128,6 +128,9 @@ type Window struct {
 	// IsUnsaved reports the unsaved changes the application announced. It is
 	// session state and never enters an object or a preference.
 	IsUnsaved bool `json:"isUnsaved,omitempty"`
+	// IsPinned marks the window kept in place. A pinned window is a layout
+	// attribute and follows the account across browsers (DASH-C-27).
+	IsPinned bool `json:"isPinned,omitempty"`
 
 	// openingState is the state the manifest defaults this window to.
 	openingState string
@@ -185,6 +188,21 @@ type Record struct {
 	State       string `json:"state"`
 	Workspace   string `json:"workspace"`
 	Display     string `json:"display,omitempty"`
+	// Pinned reports that the window is pinned; it is a layout attribute, not
+	// session state (DASH-C-27).
+	Pinned bool `json:"pinned,omitempty"`
+}
+
+// SetPinned marks one live window pinned or unpinned. Pinning is a layout
+// attribute: the window stays open and the flag follows the account through the
+// layout preference (DASH-C-27).
+func (d *Desktop) SetPinned(id string, isPinned bool) bool {
+	window := d.windowByID(id)
+	if window == nil || !isLive(window.State) {
+		return false
+	}
+	window.IsPinned = isPinned
+	return true
 }
 
 // Desktop is the window set of one browser session (DASH-C-74). Open, Minimize,
@@ -658,9 +676,16 @@ func (d *Desktop) Records() []Record {
 			State:       state,
 			Workspace:   window.Workspace,
 			Display:     window.Display,
+			Pinned:      window.IsPinned,
 		})
 	}
 	return records
+}
+
+// WindowLayout renders the session's layout at the current version: the records
+// a layout store persists and nothing else (DASH-C-27).
+func (d *Desktop) WindowLayout() WindowLayout {
+	return WindowLayout{SchemaVersion: WindowLayoutVersion, Records: d.Records()}
 }
 
 // Layout is the migrated session snapshot codec (DASH-C-27). It carries

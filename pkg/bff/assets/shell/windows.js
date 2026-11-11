@@ -133,6 +133,13 @@ export function createWindowSession({ api }) {
     return adopt(await api.write("PUT", `${WINDOWS_PATH}/${encodeURIComponent(windowId)}/bounds`, bounds));
   }
 
+  // setPinned marks one window pinned or unpinned. Pinning is a layout
+  // attribute, so it follows the account through the layout preference
+  // (DASH-C-27).
+  async function setPinned(windowId, isPinned) {
+    return adopt(await api.write("PUT", `${WINDOWS_PATH}/${encodeURIComponent(windowId)}/pinned`, { pinned: isPinned }));
+  }
+
   // moveToWorkspace moves one window into a workspace.
   async function moveToWorkspace(windowId, workspace) {
     return adopt(await api.write("PUT", `${WINDOWS_PATH}/${encodeURIComponent(windowId)}/workspace`, { workspace }));
@@ -208,6 +215,7 @@ export function createWindowSession({ api }) {
     fullscreen,
     snap,
     setBounds,
+    setPinned,
     moveToWorkspace,
     markUnsaved,
     heartbeat,

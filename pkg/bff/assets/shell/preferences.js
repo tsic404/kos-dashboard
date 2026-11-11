@@ -55,6 +55,47 @@ export function withSort(layout, sort) {
   return { ...layout, sort };
 }
 
+// The window layout is the account's cross-browser placement (DASH-C-27): the
+// front answers it adapted to the asking browser, and the shell writes back the
+// layout projection a window change produced.
+export const DESKTOP_LAYOUT_PATH = "/api/v1/desktop/layout";
+export const WINDOW_LAYOUT_PATH = PREFERENCE_PREFIX + "windowLayout";
+
+// windowLayoutQuery renders the browser's report: the viewport it renders in
+// and the display set it has. The shell places windows on the primary display
+// only, so it reports that complete set; a record on a display this browser
+// does not have falls back to the primary display (DASH-C-27).
+export function windowLayoutQuery(viewport = null) {
+  const query = new URLSearchParams();
+  const width = Number(viewport && viewport.width) || 0;
+  const height = Number(viewport && viewport.height) || 0;
+  if (width > 0 && height > 0) query.set("viewport", `${width}x${height}`);
+  query.append("display", "");
+  return `?${query}`;
+}
+
+// encodeWindowLayout renders one layout projection as the stored value: the
+// version and its records, and nothing else (DASH-C-27).
+export function encodeWindowLayout(layout) {
+  return JSON.stringify({
+    schemaVersion: layout && layout.schemaVersion,
+    records: Array.isArray(layout && layout.records) ? layout.records : [],
+  });
+}
+
+// readWindowLayout reads the account's layout as this browser sees it: the
+// front clamps the bounds and falls back a removed display, and that adaptation
+// is the answer's alone (DASH-C-27).
+export function readWindowLayout(api, { viewport = null } = {}) {
+  return api.get(DESKTOP_LAYOUT_PATH + windowLayoutQuery(viewport));
+}
+
+// saveWindowLayout stores one layout projection; the front judges the value
+// against the account's stored one before the control plane keeps it.
+export async function saveWindowLayout(api, layout) {
+  await api.write("PUT", WINDOW_LAYOUT_PATH, { value: encodeWindowLayout(layout) });
+}
+
 // readDock reads the account's dock layout and its application order.
 export function readDock(api) {
   return api.get(DOCK_PATH);
