@@ -70,9 +70,10 @@ func (a Asset) AddressPath() string {
 }
 
 // SignedURL renders the short-lived address a frame loads the asset from. The
-// signature binds the extension, application, version, digest, asset path and
-// expiry, so an address cannot be replayed for another document or after it
-// expired (KOSD-C-73).
+// signature binds the extension, application, version, digest and expiry, so an
+// address cannot be replayed for another document or after it expired
+// (KOSD-C-73). The path is not part of the signature: a document's relative
+// references are served under the same grant.
 func SignedURL(secret []byte, origin string, asset Asset, expires time.Time) (string, error) {
 	if origin == "" {
 		return "", fmt.Errorf("apphost: asset origin is empty")
@@ -89,14 +90,24 @@ func SignedURL(secret []byte, origin string, asset Asset, expires time.Time) (st
 	return target.String(), nil
 }
 
+// AssetGrantCookie is the scoped credential a served signed address leaves on the
+// application origin. A relative reference carries no query, so the document's
+// grant rides a cookie scoped to the asset routes instead (KOSD-C-73).
+const AssetGrantCookie = "kos_asset_grant"
+
+// AssetGrantPath scopes AssetGrantCookie to the asset routes; no other
+// application route receives it.
+const AssetGrantPath = AssetAddressPrefix
+
 // SignAsset renders the signature of one asset address and its expiry. The
-// signed message is the extension, application, version, digest and asset path,
-// so neither the address nor the document it names can be swapped.
+// signed message is the extension, application, version and digest with the
+// expiry, so neither the address nor the document it names can be swapped and
+// every asset of one package version shares the grant (KOSD-C-73).
 func SignAsset(secret []byte, asset Asset, expires time.Time) string {
 	mac := hmac.New(sha256.New, secret)
-	fmt.Fprintf(mac, "%s\n%s\n%s\n%s\n%s\n%d",
+	fmt.Fprintf(mac, "%s\n%s\n%s\n%s\n%d",
 		asset.Extension, asset.AppID, asset.Version, asset.Digest,
-		strings.TrimPrefix(asset.Path, "/"), expires.UTC().Unix())
+		expires.UTC().Unix())
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -120,4 +131,26 @@ func ParseExpiry(raw string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("apphost: asset expiry %q is not a timestamp", raw)
 	}
 	return time.Unix(seconds, 0).UTC(), nil
+}
+
+// SignAssetGrant renders the credential a served document leaves for its relative
+// references: the document's five bindings with their expiry, in the same order
+// the address carries them (KOSD-C-73).
+func SignAssetGrant(secret []byte, asset Asset, expires time.Time) string {
+	return strconv.FormatInt(expires.UTC().Unix(), 10) + "." + SignAsset(secret, asset, expires)
+}
+
+// VerifyAssetGrant judges one grant credential against the asset address it was
+// presented for. A value that is not the document's expiry and signature, names
+// another binding, or outlived its expiry fails closed (KOSD-C-73).
+func VerifyAssetGrant(secret []byte, asset Asset, credential string, now time.Time) error {
+	expiry, signature, found := strings.Cut(credential, ".")
+	if !found || expiry == "" || signature == "" {
+		return ErrAssetSignature
+	}
+	expires, err := ParseExpiry(expiry)
+	if err != nil {
+		return ErrAssetSignature
+	}
+	return VerifyAsset(secret, asset, expires, signature, now)
 }

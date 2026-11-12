@@ -18,7 +18,7 @@ KOS 桌面项目：浏览器桌面与 BFF — 桌面、窗口、dock、launcher�
 | `pkg/dock` | 桌面条目对象类（DASH-C-30）、桌面页声明（DASH-C-52）、dock 偏好域（DASH-C-27）、条目生命周期控制器（KOSD-C-19/20） |
 | `pkg/wm` | 窗口管理器：状态机、会话窗口集合、几何、z-order、焦点、吸附、工作区与多显示器（DASH-C-74）；布局记录 seam 与迁移的尺寸/布局编解码（DASH-C-27） |
 | `pkg/desktop` | 桌面页投影：条目、已安装应用、最近使用与通知中心，逐项带来源（KOSD-C-53） |
-| `pkg/apphost` | 窗口应用：`App` 清单装载与校验（KOSD-C-73）、launcher/dock 共用清单、窗口实例与短期应用令牌、`ready` 握手、权限确认与撤销、审计（KOSD-C-75、KOSD-C-14）、资产地址签名 |
+| `pkg/apphost` | 窗口应用：`App` 清单装载与校验（KOSD-C-73）、launcher/dock 共用清单、窗口实例与短期应用令牌、`ready` 握手、权限确认与撤销、审计（KOSD-C-75、KOSD-C-14）、资产地址签名与同摘要子资源授权 |
 | `pkg/bff` | 会话引导与登录代理、控制面 API 代理与错误包络、事件 SSE、CSRF/CSP、应用宿主路由、静态资产 |
 | `pkg/bff/assets/shell` | 浏览器外壳：启动、路由、错误边界、页面注册表导航、桌面页渲染、事件流、dock 与 launcher 界面、应用窗口挂载与 `ready` 握手调用 |
 | `cmd/kos-dashboard` | BFF 进程入口 |
@@ -59,13 +59,13 @@ KOS_DASHBOARD_SESSION_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n=') \
 |---|---|
 | `-address` | 浏览器入口监听地址，默认 `:8080` |
 | `-upstream` | 控制面 API 基地址，默认 `http://127.0.0.1:8081` |
-| `-secure-cookies` | TLS 之后设置会话 Cookie 的 `Secure` |
+| `-secure-cookies` | TLS 之后设置会话 Cookie 与应用资产授权 Cookie 的 `Secure` |
 | `-frame-origin` | 允许窗口内嵌的应用 origin（KOSD-F-18），默认只允许同源 |
 | `-console-origin` | 必填。本进程服务控制台所用的 origin；应用入口与该 origin 相同即声明无效，资产也拒绝在此 origin 分发（KOSD-F-18） |
-| `-app-assets-root` | 必填。已校验应用包的解包目录，布局为 `<extension>/<version>/<digest>/<asset>`；签名资产地址只从这里分发（KOSD-C-73） |
+| `-app-assets-root` | 必填。已校验应用包的解包目录，布局为 `<extension>/<application>/<version>/<digest>/<asset>`，与服务地址的段序一致；签名资产地址只从这里分发（KOSD-C-73） |
 | `-allow-insecure-app-entries` | 允许 loopback 上的明文 HTTP 应用入口，供本地部署使用（KOSD-C-73） |
 
-`KOS_DASHBOARD_SESSION_KEY` 是会话 Cookie 的封装密钥（32 字节，无填充 base64；资产地址签名与它共用）。未设置时进程生成随机密钥，
+`KOS_DASHBOARD_SESSION_KEY` 是会话 Cookie 的封装密钥（32 字节，无填充 base64；资产地址签名和同摘要子资源授权凭据共用它）。未设置时进程生成随机密钥，
 重启即结束全部会话。
 
 ## API 面
@@ -86,7 +86,7 @@ KOS_DASHBOARD_SESSION_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n=') \
 | `PUT/DELETE /api/v1/apps/{id}/permissions/{permission}` | 确认或撤销能力；撤销立即失效当前窗口（KOSD-C-75） |
 | `POST /api/v1/windows/{window}/capabilities/{permission}` | 使用一项能力并写审计；未确认返回 `consent_required`（KOSD-C-75、KOSD-C-14） |
 | `GET /api/v1/deep-links?path=` | 深链解析；未声明或不存在的应用不创建窗口（DASH-C-30） |
-| `GET /app-assets/{extension}/{app}/{version}/{digest}/{path}` | 应用 UI 资产：按扩展、应用、版本与包摘要寻址，校验覆盖路径的短期签名与到期；只在应用 origin 上分发，不在控制台 origin 提供（KOSD-C-73、KOSD-F-18） |
+| `GET /app-assets/{extension}/{app}/{version}/{digest}/{path}` | 应用 UI 资产：按扩展、应用、版本与包摘要寻址，校验绑定扩展、应用、版本、摘要与到期的短期签名；入口文档成功分发后为同摘要的相对子资源留下作用域限于资产路由、HttpOnly、Host-only 的短期授权凭据，跨摘要、跨应用、过期或篡改一律拒绝；只在应用 origin 上分发，不在控制台 origin 提供（KOSD-C-73、KOSD-F-18） |
 | `GET /api/v1/dock` | 账号的 dock 布局与按固定顺序排列的应用；未写入时答默认值（DASH-C-27、DASH-C-30） |
 | `GET /api/v1/launcher` | 账号的 launcher 布局与应用列表；未写入时答默认值（DASH-C-27） |
 | `GET /api/v1/desktop/windows` | 本浏览器会话的窗口集合：窗口、工作区、当前工作区的任务栏、焦点窗口的地址与每个窗口的应用实例（DASH-C-74） |

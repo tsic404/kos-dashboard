@@ -167,17 +167,35 @@ func (r *recorder) count() int {
 // the owner in through it.
 func startFront(t *testing.T, control *httptest.Server, audit *recorder) (*httptest.Server, http.Header) {
 	t.Helper()
+	assets := apphost.NewMemoryAssets()
+	for extension, files := range map[string]map[string][]byte{
+		fileExtID: {
+			"index.html": []byte("<html>files</html>"),
+			"app.css":    []byte("body{color:red}"),
+			"app.js":     []byte("main()"),
+		},
+		noteExtID: {
+			"index.html": []byte("<html>notes</html>"),
+			"app.css":    []byte("body{color:blue}"),
+		},
+	} {
+		if err := assets.Publish(extension, "1.0.0", assetDigest, files); err != nil {
+			t.Fatalf("publish the assets of %s: %v", extension, err)
+		}
+	}
+	return startFrontWith(t, control, audit, assets, nil)
+}
+
+// startFrontWith serves the front over one asset store with one seal key, so a
+// case can drive the disk store a deployment unpacks and mint its own signed
+// addresses. An empty key is generated at start, which ends every session on a
+// restart.
+func startFrontWith(t *testing.T, control *httptest.Server, audit *recorder,
+	files apphost.AssetStore, sealKey []byte) (*httptest.Server, http.Header) {
+	t.Helper()
 	upstream, err := url.Parse(control.URL)
 	if err != nil {
 		t.Fatalf("parse the composed URL: %v", err)
-	}
-	assets := apphost.NewMemoryAssets()
-	for extension, document := range map[string]string{
-		fileExtID: "<html>files</html>", noteExtID: "<html>notes</html>",
-	} {
-		if err := assets.Publish(extension, "1.0.0", assetDigest, map[string][]byte{"index.html": []byte(document)}); err != nil {
-			t.Fatalf("publish the assets of %s: %v", extension, err)
-		}
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -188,7 +206,8 @@ func startFront(t *testing.T, control *httptest.Server, audit *recorder) (*httpt
 	server, err := bff.New(bff.Config{
 		Upstream:      upstream,
 		Auditor:       audit,
-		AssetFiles:    assets,
+		SealKey:       sealKey,
+		AssetFiles:    files,
 		ConsoleOrigin: "http://" + listener.Addr().String(),
 	})
 	if err != nil {
@@ -438,9 +457,27 @@ func TestTC140InstallsOpensAndUninstallsAWIndowApplication(t *testing.T) {
 	// The signed address actually serves the packaged document from the
 	// application origin, and the console origin never serves application bytes
 	// (KOSD-C-73, KOSD-F-18).
-	if served := fetchAsset(t, front, opened.Frame, "files.apps.example.test"); served.status != http.StatusOK ||
-		served.body != "<html>files</html>" {
-		t.Fatalf("frame asset = %d %q, want the packaged document", served.status, served.body)
+	document := fetchAsset(t, front, opened.Frame, "files.apps.example.test")
+	if document.status != http.StatusOK || document.body != "<html>files</html>" {
+		t.Fatalf("frame asset = %d %q, want the packaged document", document.status, document.body)
+	}
+	// The served entry document loads its relative references: its answer leaves
+	// a narrow grant on the application origin, the same-digest stylesheet is
+	// served without a query signature of its own, a request without the grant is
+	// refused, and an address whose signature was tampered with stays refused
+	// even while the grant is present (KOSD-C-73, DASH-C-30).
+	grant := grantOf(t, document)
+	stylesheet := siblingAddress(t, opened.Frame, "app.css")
+	if served := fetchAssetWithGrant(t, front, stylesheet, "files.apps.example.test", grant); served.status != http.StatusOK ||
+		served.body != "body{color:red}" {
+		t.Fatalf("subresource = %d %q, want the packaged stylesheet", served.status, served.body)
+	}
+	if served := fetchAsset(t, front, stylesheet, "files.apps.example.test"); served.status != http.StatusForbidden {
+		t.Fatalf("subresource without the grant = %d, want %d", served.status, http.StatusForbidden)
+	}
+	tampered := strings.Replace(opened.Frame, "kos-sig=", "kos-sig=forged-", 1)
+	if served := fetchAssetWithGrant(t, front, tampered, "files.apps.example.test", grant); served.status != http.StatusForbidden {
+		t.Fatalf("tampered signature = %d, want %d", served.status, http.StatusForbidden)
 	}
 	consoleOrigin, _ := url.Parse(front.URL)
 	if console := fetchAsset(t, front, opened.Frame, consoleOrigin.Host); console.status != http.StatusNotFound {
@@ -497,11 +534,11 @@ func TestTC140InstallsOpensAndUninstallsAWIndowApplication(t *testing.T) {
 	// The console document frames only the installed application's origin, and
 	// the session cookie stays a host-only, HttpOnly cookie that the application
 	// origin cannot read (KOSD-F-18, KOSD-C-75).
-	document := call(t, front, http.MethodGet, "/", cookies.Get("Cookie"), nil, "")
-	if document.status != http.StatusOK {
-		t.Fatalf("read the shell document = %d %v", document.status, document.body)
+	shellDocument := call(t, front, http.MethodGet, "/", cookies.Get("Cookie"), nil, "")
+	if shellDocument.status != http.StatusOK {
+		t.Fatalf("read the shell document = %d %v", shellDocument.status, shellDocument.body)
 	}
-	policy := document.header.Get("Content-Security-Policy")
+	policy := shellDocument.header.Get("Content-Security-Policy")
 	if !strings.Contains(policy, "frame-src 'self' "+fileOrigin) {
 		t.Fatalf("content security policy = %q, want frame-src to list %s", policy, fileOrigin)
 	}
@@ -638,6 +675,13 @@ func assertSessionCookie(t *testing.T, cookies []*http.Cookie) {
 // application origin the deployment maps to it.
 func fetchAsset(t *testing.T, front *httptest.Server, address, host string) response {
 	t.Helper()
+	return fetchAssetWithGrant(t, front, address, host, "")
+}
+
+// fetchAssetWithGrant reads one asset address with the subresource grant a served
+// entry document left on the application origin.
+func fetchAssetWithGrant(t *testing.T, front *httptest.Server, address, host, grant string) response {
+	t.Helper()
 	parsed, err := url.Parse(address)
 	if err != nil {
 		t.Fatalf("parse the asset address: %v", err)
@@ -647,6 +691,9 @@ func fetchAsset(t *testing.T, front *httptest.Server, address, host string) resp
 		t.Fatalf("build the asset request: %v", err)
 	}
 	request.Host = host
+	if grant != "" {
+		request.AddCookie(&http.Cookie{Name: apphost.AssetGrantCookie, Value: grant})
+	}
 	answer, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("read the asset: %v", err)
@@ -659,6 +706,31 @@ func fetchAsset(t *testing.T, front *httptest.Server, address, host string) resp
 		status: answer.StatusCode, body: string(payload), decoded: decoded,
 		cookies: answer.Cookies(), header: answer.Header,
 	}
+}
+
+// grantOf reads the subresource grant a served asset answer set.
+func grantOf(t *testing.T, served response) string {
+	t.Helper()
+	for _, cookie := range served.cookies {
+		if cookie.Name == apphost.AssetGrantCookie {
+			return cookie.Value
+		}
+	}
+	t.Fatalf("asset answer set no %s cookie, want the subresource grant", apphost.AssetGrantCookie)
+	return ""
+}
+
+// siblingAddress rewrites one signed address to a sibling in the same directory,
+// which is how a browser resolves a relative reference in the document.
+func siblingAddress(t *testing.T, address, name string) string {
+	t.Helper()
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("parse the signed address: %v", err)
+	}
+	parsed.RawQuery = ""
+	parsed.Path = parsed.Path[:strings.LastIndex(parsed.Path, "/")+1] + name
+	return parsed.String()
 }
 
 // loginAgain signs the same account in through the same front, which is a second

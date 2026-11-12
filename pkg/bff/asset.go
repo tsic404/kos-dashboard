@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"path"
 	"strings"
+	"time"
 
 	"github.com/tsic404/kos-dashboard/pkg/apphost"
 )
@@ -36,8 +37,8 @@ func (s *Server) appAsset(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusNotFound, "not_found", "资产地址不是扩展、应用、版本与摘要的形式", "authorize")
 		return
 	}
-	expires, err := apphost.ParseExpiry(r.URL.Query().Get("kos-exp"))
-	if err != nil || apphost.VerifyAsset(s.sealKey, asset, expires, r.URL.Query().Get("kos-sig"), s.now()) != nil {
+	expires, isSignedAddress, err := s.assetExpiry(r, asset)
+	if err != nil {
 		// An address whose signature does not verify is not served, and the frame
 		// shows its load error instead of a downgraded asset (KOSD-C-73).
 		writeFailure(w, http.StatusForbidden, "permission_denied", "资产地址签名无效或已过期", "authorize")
@@ -52,6 +53,11 @@ func (s *Server) appAsset(w http.ResponseWriter, r *http.Request) {
 		writeFailure(w, http.StatusBadGateway, "internal", "资产读取失败："+err.Error(), "read")
 		return
 	}
+	if isSignedAddress {
+		// A relative reference carries no query of its own, so a served signed
+		// document hands its digest scope to the following requests (KOSD-C-73).
+		s.setAssetGrant(w, asset, expires)
+	}
 	header := w.Header()
 	header.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors "+s.frameAncestor())
 	header.Set("X-Content-Type-Options", "nosniff")
@@ -60,6 +66,60 @@ func (s *Server) appAsset(w http.ResponseWriter, r *http.Request) {
 	header.Set("Cache-Control", "public, max-age=31536000, immutable")
 	header.Set("Content-Type", contentTypeOf(asset.Path))
 	_, _ = w.Write(content)
+}
+
+// assetExpiry judges the credential one asset request carries. A request that
+// names an expiry or a signature is judged by its address alone, so a tampered
+// query never falls back to the document grant. A relative reference carries
+// neither and is judged by the grant the entry document left on this origin
+// (KOSD-C-73).
+func (s *Server) assetExpiry(r *http.Request, asset apphost.Asset) (time.Time, bool, error) {
+	query := r.URL.Query()
+	if query.Has("kos-exp") || query.Has("kos-sig") {
+		expires, err := apphost.ParseExpiry(query.Get("kos-exp"))
+		if err != nil {
+			return time.Time{}, false, apphost.ErrAssetSignature
+		}
+		return expires, true, apphost.VerifyAsset(s.sealKey, asset, expires, query.Get("kos-sig"), s.now())
+	}
+	cookie, err := r.Cookie(apphost.AssetGrantCookie)
+	if err != nil || cookie.Value == "" {
+		return time.Time{}, false, apphost.ErrAssetSignature
+	}
+	return time.Time{}, false, apphost.VerifyAssetGrant(s.sealKey, asset, cookie.Value, s.now())
+}
+
+// setAssetGrant leaves the short-lived credential a document's relative
+// references load with. A relative reference carries no query of its own, so the
+// digest scope needs somewhere else to travel; it is host-only, HttpOnly,
+// scoped to the asset routes and independent of the console session cookie
+// (KOSD-C-73, KOSD-C-75).
+func (s *Server) setAssetGrant(w http.ResponseWriter, asset apphost.Asset, expires time.Time) {
+	remaining := int(expires.Sub(s.now()) / time.Second)
+	if remaining < 1 {
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     apphost.AssetGrantCookie,
+		Value:    apphost.SignAssetGrant(s.sealKey, asset, expires),
+		Path:     apphost.AssetGrantPath,
+		MaxAge:   remaining,
+		Expires:  expires,
+		HttpOnly: true,
+		Secure:   s.secure,
+		SameSite: s.assetGrantSameSite(),
+	})
+}
+
+// assetGrantSameSite keeps the grant usable inside a framed application. An
+// application origin may be another site than the console, which only
+// SameSite=None rides; browsers require it with Secure, so a front not behind
+// TLS keeps Lax and serves same-site application origins (KOSD-C-73).
+func (s *Server) assetGrantSameSite() http.SameSite {
+	if s.secure {
+		return http.SameSiteNoneMode
+	}
+	return http.SameSiteLaxMode
 }
 
 // splitAssetAddress reads the extension, application, version, digest and asset
