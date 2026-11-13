@@ -48,11 +48,11 @@ func parseOptions(args []string) (options, error) {
 	flags.StringVar(&parsed.address, "address", ":8080", "listen address of the browser front")
 	flags.StringVar(&parsed.upstream, "upstream", "http://127.0.0.1:8081", "control-plane API base URL")
 	flags.BoolVar(&parsed.secure, "secure-cookies", false,
-		"mark the session cookie Secure (set behind TLS)")
+		"mark the session and asset-grant cookies Secure (set behind TLS)")
 	flags.StringVar(&parsed.consoleOrigin, "console-origin", "",
 		"origin the console is served from; required, and no application entry may share it (KOSD-F-18)")
 	flags.StringVar(&parsed.appAssetsRoot, "app-assets-root", "",
-		"directory the verified application packages are unpacked under, as <extension>/<version>/<digest>/<asset> (KOSD-C-73)")
+		"directory the verified application packages are unpacked under, as <extension>/<application>/<version>/<digest>/<asset> (KOSD-C-73)")
 	flags.BoolVar(&parsed.allowInsecure, "allow-insecure-app-entries", false,
 		"admit plain-HTTP application entries on a loopback host, which is how a local deployment serves an application (KOSD-C-73)")
 	flags.Func("frame-origin", "application origin a window may frame (repeatable)", func(origin string) error {

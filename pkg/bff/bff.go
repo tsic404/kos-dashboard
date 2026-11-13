@@ -78,7 +78,8 @@ type Config struct {
 	// AssetTTL bounds one signed asset address; defaults to
 	// apphost.DefaultAssetTTL.
 	AssetTTL time.Duration
-	// SecureCookies marks the session cookie Secure; set behind TLS.
+	// SecureCookies marks the session and asset-grant cookies Secure; set behind
+	// TLS.
 	SecureCookies bool
 	// HTTP is the client every upstream call uses; defaults to a bounded one.
 	HTTP *http.Client

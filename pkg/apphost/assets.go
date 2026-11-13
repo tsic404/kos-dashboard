@@ -91,9 +91,12 @@ func (m *MemoryAssets) Read(_ context.Context, asset Asset) ([]byte, error) {
 }
 
 // DirAssets serves UI assets from a deployment directory laid out as
-// root/<extension>/<version>/<digest>/<asset path>. The digest is part of the
-// address, so a new build never overwrites the bytes an open window loads, and a
-// path that would leave the root is never served (KOSD-C-73).
+// root/<extension>/<application>/<version>/<digest>/<asset path>, the same
+// segments Asset.AddressPath names, so the served address and this store always
+// point at one place. The application segment keeps two applications of one
+// package apart, the digest keeps a new build from overwriting the bytes an open
+// window loads, and a path that would leave the root is never served
+// (KOSD-C-73).
 type DirAssets struct {
 	// Root is the directory the verified packages were unpacked into; required.
 	Root string
@@ -104,7 +107,7 @@ func (d *DirAssets) Read(_ context.Context, asset Asset) ([]byte, error) {
 	if d == nil || d.Root == "" {
 		return nil, ErrAssetUnaddressed
 	}
-	for _, segment := range []string{asset.Extension, asset.Version, asset.Digest} {
+	for _, segment := range []string{asset.Extension, asset.AppID, asset.Version, asset.Digest} {
 		if !isSafeSegment(segment) {
 			return nil, ErrAssetUnknown
 		}
@@ -113,12 +116,12 @@ func (d *DirAssets) Read(_ context.Context, asset Asset) ([]byte, error) {
 	if assetPath == "" || assetPath == "." || strings.HasPrefix(assetPath, "../") {
 		return nil, ErrAssetUnknown
 	}
-	relative := asset.Extension + "/" + asset.Version + "/" + asset.Digest + "/" + assetPath
+	relative := asset.Extension + "/" + asset.AppID + "/" + asset.Version + "/" + asset.Digest + "/" + assetPath
 	content, err := fs.ReadFile(os.DirFS(d.Root), relative)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if info, statErr := os.Stat(d.Root); statErr == nil && info.IsDir() {
-			if _, versionErr := os.Stat(joinUnder(d.Root, asset.Extension, asset.Version, asset.Digest)); versionErr != nil {
+			if _, versionErr := os.Stat(joinUnder(d.Root, asset.Extension, asset.AppID, asset.Version, asset.Digest)); versionErr != nil {
 				return nil, ErrAssetUnaddressed
 			}
 		}

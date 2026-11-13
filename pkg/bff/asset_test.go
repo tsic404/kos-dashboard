@@ -39,7 +39,13 @@ func assetContributions() []apphost.Contribution {
 func assetServer(t *testing.T) *Server {
 	t.Helper()
 	files := apphost.NewMemoryAssets()
-	files_ := map[string][]byte{"index.html": []byte("<html>v2</html>"), "icon.svg": []byte("<svg/>")}
+	files_ := map[string][]byte{
+		"index.html":     []byte("<html>v2</html>"),
+		"icon.svg":       []byte("<svg/>"),
+		"app.css":        []byte("body{color:red}"),
+		"app.js":         []byte("main()"),
+		"deep/theme.css": []byte("h1{color:blue}"),
+	}
 	if err := files.Publish("files-ext", "2.0.0", "sha256:aaaa", files_); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
@@ -80,6 +86,47 @@ func requestFor(address, host string) *http.Request {
 	return request
 }
 
+// requestWithGrant builds one asset request that carries the subresource grant.
+func requestWithGrant(address, host, grant string) *http.Request {
+	request := requestFor(address, host)
+	if grant != "" {
+		request.AddCookie(&http.Cookie{Name: apphost.AssetGrantCookie, Value: grant})
+	}
+	return request
+}
+
+// subresourceAddress rewrites one signed asset address to a sibling the way a
+// browser resolves a relative reference: same directory, no query.
+func subresourceAddress(t *testing.T, address, name string) string {
+	t.Helper()
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("parse %q: %v", address, err)
+	}
+	parsed.RawQuery = ""
+	parsed.Path = parsed.Path[:strings.LastIndex(parsed.Path, "/")+1] + name
+	return parsed.String()
+}
+
+// grantOf reads the narrow credential a served address left for subresources.
+func grantOf(t *testing.T, served *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	for _, cookie := range served.Result().Cookies() {
+		if cookie.Name == apphost.AssetGrantCookie {
+			return cookie
+		}
+	}
+	t.Fatalf("served address set no %s cookie, want the subresource grant", apphost.AssetGrantCookie)
+	return nil
+}
+
+// serveAsset serves one asset request through the front.
+func serveAsset(server *Server, request *http.Request) *httptest.ResponseRecorder {
+	served := httptest.NewRecorder()
+	server.appAsset(served, request)
+	return served
+}
+
 // TestAssetServesTheVersionedAddress checks the asset route: the document is
 // served from the application origin under an address naming the extension,
 // application, version and digest, and a forged signature is refused
@@ -102,6 +149,162 @@ func TestAssetServesTheVersionedAddress(t *testing.T) {
 	}
 	if policy := served.Header().Get("Content-Security-Policy"); !strings.Contains(policy, "frame-ancestors https://console.example.test") {
 		t.Fatalf("policy = %q, want only the console allowed to frame it (KOSD-C-75)", policy)
+	}
+}
+
+// TestSignedEntryDocumentServesItsSameDigestSubresources checks that a served
+// entry document loads its relative references: the answer leaves a narrow grant
+// on the application origin, and the styles, scripts and icons of the same
+// package digest are served without a query signature each (KOSD-C-73,
+// DASH-C-30).
+func TestSignedEntryDocumentServesItsSameDigestSubresources(t *testing.T) {
+	server := assetServer(t)
+	address, reason := server.frameAddress(installedEntry(t))
+	if address == "" {
+		t.Fatalf("frame address = %q (%s), want a signed address", address, reason)
+	}
+	entry := serveAsset(server, requestFor(address, "files.apps.example.test"))
+	if entry.Code != http.StatusOK {
+		t.Fatalf("entry document = %d %q, want it served", entry.Code, entry.Body.String())
+	}
+	grant := grantOf(t, entry)
+	if grant.Path != apphost.AssetGrantPath || grant.Domain != "" || !grant.HttpOnly {
+		t.Fatalf("grant = %+v, want an HttpOnly, host-only credential scoped to the asset routes", grant)
+	}
+	if grant.SameSite == http.SameSiteNoneMode && !grant.Secure {
+		t.Fatalf("grant = %+v, want SameSite=None only together with Secure", grant)
+	}
+	if grant.MaxAge <= 0 {
+		t.Fatalf("grant = %+v, want a bounded lifetime rather than a session cookie", grant)
+	}
+
+	for _, name := range []string{"app.css", "app.js", "icon.svg", "deep/theme.css"} {
+		served := serveAsset(server, requestWithGrant(
+			subresourceAddress(t, address, name), "files.apps.example.test", grant.Value))
+		if served.Code != http.StatusOK {
+			t.Fatalf("%s = %d %q, want the same-digest subresource served", name, served.Code, served.Body.String())
+		}
+		if served.Header().Get("X-Content-Type-Options") != "nosniff" ||
+			served.Header().Get("Referrer-Policy") != "no-referrer" {
+			t.Fatalf("%s headers = %v, want nosniff and no-referrer kept", name, served.Header())
+		}
+	}
+
+	// A sibling address carrying the entry document's query signature is served
+	// too: the signature covers the five bindings, not the path (KOSD-C-73).
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("parse the signed address: %v", err)
+	}
+	signed := subresourceAddress(t, address, "app.css") + "?" + parsed.RawQuery
+	if served := serveAsset(server, requestFor(signed, "files.apps.example.test")); served.Code != http.StatusOK {
+		t.Fatalf("signed sibling = %d %q, want the document's signature to cover it", served.Code, served.Body.String())
+	}
+
+	// The policy stays as strict as on the document, and a subresource answer
+	// hands out no further credential (KOSD-F-18, KOSD-C-75).
+	stylesheet := serveAsset(server, requestWithGrant(
+		subresourceAddress(t, address, "app.css"), "files.apps.example.test", grant.Value))
+	policy := stylesheet.Header().Get("Content-Security-Policy")
+	if strings.Contains(policy, "unsafe-inline") ||
+		!strings.Contains(policy, "frame-ancestors https://console.example.test") {
+		t.Fatalf("policy = %q, want the unchanged frame-ancestors and no unsafe-inline", policy)
+	}
+	if issued := stylesheet.Result().Cookies(); len(issued) != 0 {
+		t.Fatalf("subresource answer issued cookies %v, want none", issued)
+	}
+}
+
+// TestAssetGrantDoesNotCrossDigestApplicationVersionOrTampering checks that the
+// grant is scoped to the five bindings it was signed for: another digest,
+// application or version, a request that names only half of the address
+// parameters, and a tampered grant all fail closed (KOSD-C-73).
+func TestAssetGrantDoesNotCrossDigestApplicationVersionOrTampering(t *testing.T) {
+	server := assetServer(t)
+	address, reason := server.frameAddress(installedEntry(t))
+	if address == "" {
+		t.Fatalf("frame address = %q (%s), want a signed address", address, reason)
+	}
+	grant := grantOf(t, serveAsset(server, requestFor(address, "files.apps.example.test")))
+	subresource := subresourceAddress(t, address, "app.css")
+
+	if served := serveAsset(server, requestFor(subresource, "files.apps.example.test")); served.Code != http.StatusForbidden {
+		t.Fatalf("subresource without a credential = %d, want %d (KOSD-C-73)", served.Code, http.StatusForbidden)
+	}
+
+	otherApplication := strings.Replace(subresource, "/files-ext/files/", "/files-ext/notes/", 1)
+	for _, changed := range []string{
+		strings.Replace(subresource, "sha256:aaaa", "sha256:bbbb", 1),
+		otherApplication,
+		strings.Replace(subresource, "/2.0.0/", "/3.0.0/", 1),
+	} {
+		if served := serveAsset(server, requestWithGrant(changed, "files.apps.example.test", grant.Value)); served.Code != http.StatusForbidden {
+			t.Fatalf("%s = %d, want %d", changed, served.Code, http.StatusForbidden)
+		}
+	}
+	if served := serveAsset(server, requestWithGrant(subresource, "files.apps.example.test", grant.Value+"x")); served.Code != http.StatusForbidden {
+		t.Fatalf("tampered grant = %d, want %d", served.Code, http.StatusForbidden)
+	}
+
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("parse the signed address: %v", err)
+	}
+	expiry := parsed.Query().Get("kos-exp")
+	signature := parsed.Query().Get("kos-sig")
+	// A query that states only one half of the binding never falls back to the
+	// grant, and another application's signed address is not helped either
+	// (KOSD-C-73).
+	for _, query := range []string{
+		"kos-exp=" + expiry,
+		"kos-sig=" + signature,
+		"kos-exp=" + expiry + "&kos-sig=forged",
+		"kos-exp=&kos-sig=",
+	} {
+		if served := serveAsset(server, requestWithGrant(subresource+"?"+query, "files.apps.example.test", grant.Value)); served.Code != http.StatusForbidden {
+			t.Fatalf("query %q = %d, want %d", query, served.Code, http.StatusForbidden)
+		}
+	}
+	if served := serveAsset(server, requestFor(otherApplication+"?"+parsed.RawQuery, "files.apps.example.test")); served.Code != http.StatusForbidden {
+		t.Fatalf("another application's signed address = %d, want %d", served.Code, http.StatusForbidden)
+	}
+}
+
+// TestExpiredAssetGrantIsRefused checks that the grant and the address behind it
+// both stop working once their expiry passes (KOSD-C-73).
+func TestExpiredAssetGrantIsRefused(t *testing.T) {
+	clock := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
+	files := apphost.NewMemoryAssets()
+	_ = files.Publish("files-ext", "2.0.0", "sha256:aaaa", map[string][]byte{
+		"index.html": []byte("x"), "app.css": []byte("body{}"),
+	})
+	server, err := New(Config{
+		Upstream:      &url.URL{Scheme: "http", Host: "control.example.test"},
+		AssetFiles:    files,
+		ConsoleOrigin: "https://console.example.test",
+		AssetTTL:      time.Minute,
+		Now:           func() time.Time { return clock },
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	address, reason := server.frameAddress(installedEntry(t))
+	if address == "" {
+		t.Fatalf("frame address = %q (%s), want a signed address", address, reason)
+	}
+	grant := grantOf(t, serveAsset(server, requestFor(address, "files.apps.example.test")))
+	subresource := subresourceAddress(t, address, "app.css")
+
+	server.now = func() time.Time { return clock.Add(2 * time.Minute) }
+	if served := serveAsset(server, requestWithGrant(subresource, "files.apps.example.test", grant.Value)); served.Code != http.StatusForbidden {
+		t.Fatalf("expired grant = %d, want %d", served.Code, http.StatusForbidden)
+	}
+	parsed, err := url.Parse(address)
+	if err != nil {
+		t.Fatalf("parse the signed address: %v", err)
+	}
+	if served := serveAsset(server, requestFor(subresource+"?"+parsed.RawQuery, "files.apps.example.test")); served.Code != http.StatusForbidden {
+		t.Fatalf("expired signature on a subresource = %d, want %d", served.Code, http.StatusForbidden)
 	}
 }
 
