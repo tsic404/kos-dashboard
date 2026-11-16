@@ -102,6 +102,7 @@ KOS_DASHBOARD_SESSION_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n=') \
 | `POST /api/v1/desktop/windows/{window}/restart` | 重启错误窗口：实例键不变，应用实例与令牌换新（DASH-C-74） |
 | `GET/POST /api/v1/desktop/workspaces` | 列出工作区 / 切换当前工作区；任务栏只列当前工作区的窗口（DASH-C-74） |
 | `/api/v1/*` | 控制面 API 代理；响应与错误包络原样透传（KOSD-C-12） |
+| `/api/v1/*`（`Authorization: Bearer`） | 窗口应用令牌的读取代理：不要求会话 Cookie、不替换令牌，来源按应用入口 origin 精确许可（DASH-C-75、KOSD-C-87） |
 | `GET /healthz` | 自身健康，带观测时间 |
 | `/` | 浏览器入口与静态资产 |
 

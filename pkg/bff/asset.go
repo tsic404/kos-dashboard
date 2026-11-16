@@ -59,7 +59,7 @@ func (s *Server) appAsset(w http.ResponseWriter, r *http.Request) {
 		s.setAssetGrant(w, asset, expires)
 	}
 	header := w.Header()
-	header.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors "+s.frameAncestor())
+	header.Set("Content-Security-Policy", s.assetPolicy(asset.AppID))
 	header.Set("X-Content-Type-Options", "nosniff")
 	header.Set("Referrer-Policy", "no-referrer")
 	// The address names the version and digest, so its bytes never change.
@@ -168,6 +168,28 @@ func (s *Server) frameAncestor() string {
 		return s.validation.ConsoleOrigin
 	}
 	return "'self'"
+}
+
+// assetPolicy renders the policy of one application document (DASH-C-76,
+// KOSD-C-87): the connection face is the document's own origin, the console
+// origin and, when the manifest declares a service, that backend's origin. No
+// other application and no external source appears.
+func (s *Server) assetPolicy(appID string) string {
+	connect := []string{"'self'"}
+	if declared, found := s.host.Declared(appID); found && declared.Origin != "" {
+		connect = []string{declared.Origin}
+	}
+	if console := strings.TrimSpace(s.validation.ConsoleOrigin); console != "" {
+		connect = append(connect, console)
+	}
+	if declared, found := s.host.Declared(appID); found && declared.BackendOrigin != "" {
+		connect = append(connect, declared.BackendOrigin)
+	}
+	return strings.Join([]string{
+		"default-src 'self'",
+		"connect-src " + uniqueSources(connect),
+		"frame-ancestors " + s.frameAncestor(),
+	}, "; ")
 }
 
 // contentTypeOf names the media type one asset path is served with.

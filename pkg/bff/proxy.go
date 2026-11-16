@@ -21,6 +21,17 @@ var hopHeaders = []string{
 // unchanged, status and error envelope included, so a read through the front
 // equals the same read made directly (KOSD-C-12).
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodOptions && r.Header.Get("Origin") != "" {
+		// A window's cross-origin preflight is answered here: it needs no
+		// session and no token, and it authorises no request by itself
+		// (KOSD-C-87).
+		s.preflight(w, r)
+		return
+	}
+	if token, submitted := applicationToken(r); submitted {
+		s.proxyApplication(w, r, token)
+		return
+	}
 	if !isSafeMethod(r.Method) && !s.csrfOK(r) {
 		writeFailure(w, http.StatusForbidden, "permission_denied", "缺少或错误的 CSRF 令牌", "authorize")
 		return
@@ -56,6 +67,44 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request) {
 		s.ensureCSRF(w, r)
 	}
 	copyHeaders(w.Header(), response.Header)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(response.StatusCode)
+	_, _ = io.Copy(w, response.Body)
+}
+
+// proxyApplication forwards one read a window submitted with its application
+// token (DASH-C-75, KOSD-C-86). The front requires no console session, replaces
+// nothing and judges no scope: the token and the request source reach the
+// control plane exactly as the window sent them, and the control plane decides
+// the scope, the role and the failure class. The front adds only the exact
+// cross-origin permission the token's own application declared (KOSD-C-87).
+func (s *Server) proxyApplication(w http.ResponseWriter, r *http.Request, token string) {
+	origin := requestOrigin(r)
+	if !s.permittedOrigin(token, origin) {
+		writeFailure(w, http.StatusForbidden, "permission_denied", "请求来源不是该应用声明的入口 origin", "authorize")
+		return
+	}
+	request, err := s.upstreamRequest(r.Context(), r.Method, r.URL.Path, r.URL.RawQuery, r.Body, "")
+	if err != nil {
+		allowOrigin(w.Header(), origin)
+		writeFailure(w, http.StatusBadGateway, "internal", "控制面请求无法构造", "read")
+		return
+	}
+	copyHeaders(request.Header, r.Header)
+	// The console cookie never travels with a window read: the token is the one
+	// identity, and a cookie must not widen it (KOSD-C-86).
+	request.Header.Del("Cookie")
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response, err := s.client.Do(request)
+	if err != nil {
+		allowOrigin(w.Header(), origin)
+		writeFailure(w, http.StatusBadGateway, "internal", "控制面不可达："+err.Error(), "read")
+		return
+	}
+	defer response.Body.Close()
+	copyHeaders(w.Header(), response.Header)
+	allowOrigin(w.Header(), origin)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(w, response.Body)

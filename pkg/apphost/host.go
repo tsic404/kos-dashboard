@@ -56,6 +56,7 @@ type Host struct {
 	windows   map[string]*Window
 	tokens    map[[32]byte]TokenBinding
 	grants    map[string]map[string]map[string]PermissionState
+	declared  map[string]Declared
 }
 
 // New builds the application host.
@@ -68,6 +69,7 @@ func New(config Config) *Host {
 		windows:   make(map[string]*Window),
 		tokens:    make(map[[32]byte]TokenBinding),
 		grants:    make(map[string]map[string]map[string]PermissionState),
+		declared:  make(map[string]Declared),
 	}
 	if host.now == nil {
 		host.now = time.Now
@@ -94,6 +96,10 @@ func (h *Host) Open(registry *Registry, conversation, account, appID string) (Wi
 	if !installed {
 		return Window{}, false, ErrAppUnavailable
 	}
+	// The document this window loads may connect to the service the manifest
+	// declared, so the asset origin reads the declaration while it is at hand
+	// (DASH-C-76).
+	h.declared[entry.ID] = Declared{Origin: entry.Origin(), BackendOrigin: entry.BackendOrigin()}
 	now := h.now()
 	if entry.Window.Mode == WindowModeSingle {
 		for _, window := range h.windows {
@@ -244,12 +250,71 @@ func (h *Host) Handshake(registry *Registry, account, windowID, origin, nonce st
 func (h *Host) Authenticate(value string) (TokenBinding, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	return h.authenticateLocked(value)
+}
+
+// authenticateLocked resolves one token without taking the lock.
+func (h *Host) authenticateLocked(value string) (TokenBinding, error) {
 	h.pruneLocked()
 	binding, found := h.tokens[DigestOf(value)]
 	if !found {
 		return TokenBinding{}, ErrTokenInvalid
 	}
 	return binding, nil
+}
+
+// OriginOf names the entry origin the window of one token was opened for. The
+// front permits exactly that source to read the window's answers (KOSD-C-87).
+func (h *Host) OriginOf(value string) (string, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	binding, err := h.authenticateLocked(value)
+	if err != nil {
+		return "", false
+	}
+	window, found := h.windows[binding.WindowID]
+	if !found || window.Origin == "" {
+		return "", false
+	}
+	return window.Origin, true
+}
+
+// Origins lists the entry origins of the windows this host holds: the active
+// applications a preflight may name (KOSD-C-87).
+func (h *Host) Origins() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pruneLocked()
+	origins := make([]string, 0, len(h.windows))
+	seen := make(map[string]bool, len(h.windows))
+	for _, window := range h.windows {
+		if window.Origin == "" || window.State == InstanceStateError || seen[window.Origin] {
+			continue
+		}
+		seen[window.Origin] = true
+		origins = append(origins, window.Origin)
+	}
+	sort.Strings(origins)
+	return origins
+}
+
+// Declared names what one opened application declared: the entry origin its
+// document runs on and the origin of the service it declared, empty when it
+// declared none (DASH-C-76, KOSD-C-87).
+func (h *Host) Declared(appID string) (Declared, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	declared, found := h.declared[appID]
+	return declared, found
+}
+
+// Declared is one application as the host learned it from the registry when a
+// window was opened.
+type Declared struct {
+	// Origin is the entry origin the application document runs on.
+	Origin string
+	// BackendOrigin is the origin of the service the manifest declared.
+	BackendOrigin string
 }
 
 // Close closes one window and revokes its token (KOSD-C-75).
