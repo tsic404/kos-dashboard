@@ -332,6 +332,20 @@ func (m Manifest) Origin() string {
 	return strings.ToLower(entry.Scheme + "://" + entry.Host)
 }
 
+// BackendOrigin is the origin of the service the application declares. The
+// declaration carries one address, the health endpoint, so its scheme and host
+// are the backend origin (KOSD-C-87).
+func (m Manifest) BackendOrigin() string {
+	if m.Backend == nil || m.Backend.Health == "" {
+		return ""
+	}
+	health, err := url.Parse(m.Backend.Health)
+	if err != nil || health.Host == "" {
+		return ""
+	}
+	return strings.ToLower(health.Scheme + "://" + health.Host)
+}
+
 // ResolveDeepLink reports whether a path is one the application declared.
 func (m Manifest) ResolveDeepLink(path string) bool {
 	for _, link := range m.DeepLinks {

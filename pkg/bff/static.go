@@ -76,3 +76,26 @@ func contentSecurityPolicy(configured, installed []string) string {
 		"object-src 'none'",
 	}, "; ")
 }
+
+// uniqueSources renders one policy source list without blanks or repeats, so a
+// document never names the same source twice.
+func uniqueSources(sources []string) string {
+	kept := make([]string, 0, len(sources))
+	for _, source := range sources {
+		trimmed := strings.TrimSpace(source)
+		if trimmed == "" {
+			continue
+		}
+		repeated := false
+		for _, existing := range kept {
+			if strings.EqualFold(existing, trimmed) {
+				repeated = true
+				break
+			}
+		}
+		if !repeated {
+			kept = append(kept, trimmed)
+		}
+	}
+	return strings.Join(kept, " ")
+}
